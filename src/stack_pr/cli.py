@@ -1333,8 +1333,9 @@ def print_tips_after_view(st: list[StackEntry], args: CommonArgs) -> None:
 # ===----------------------------------------------------------------------=== #
 # Entry point for 'view' command
 # ===----------------------------------------------------------------------=== #
-def command_view(args: CommonArgs) -> None:
-    log(h("VIEW"))
+def command_view(args: CommonArgs, short=False) -> None:
+    if not short:
+        log(h("VIEW"))
 
     if should_update_local_base(
         head=args.head,
@@ -1369,8 +1370,9 @@ def command_view(args: CommonArgs) -> None:
     )
     set_base_branches(st, target=args.target)
     print_stack(st, links=args.hyperlinks)
-    print_tips_after_view(st, args)
-    log(h(blue("SUCCESS!")))
+    if not short:
+        print_tips_after_view(st, args)
+        log(h(blue("SUCCESS!")))
 
 
 # ===----------------------------------------------------------------------=== #
@@ -1491,9 +1493,10 @@ def main() -> None:  # noqa: PLR0912
     config = load_config(config_file)
 
     parser = create_argparser(config)
-    args = parser.parse_args()
+    args = parser.parse_args(sys.argv[1:] or ["submit"])
 
     if not args.command:
+        args.command = "submit"
         print(h(red("Invalid usage of the stack-pr command.")))
         parser.print_help()
         return
@@ -1527,6 +1530,8 @@ def main() -> None:  # noqa: PLR0912
                     keep_body=args.keep_body,
                     draft_bitmask=args.draft_bitmask,
                 )
+            # Show the links for easy clicking
+            command_view(common_args, short=True)
         elif args.command == "land":
             command_land(common_args)
         elif args.command == "abandon":
