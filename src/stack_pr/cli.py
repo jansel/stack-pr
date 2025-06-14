@@ -92,7 +92,7 @@ RE_STACK_INFO_LINE = re.compile(
     r"\n^stack-info: PR: (.+), branch: (.+)\n?", re.MULTILINE
 )
 RE_PR_TOC = re.compile(
-    r"^Stacked PRs:\r?\n(^ \* (__->__)?#\d+\r?\n)*\r?\n", re.MULTILINE
+    r"^Stacked PRs[^:]*:\r?\n(^ \* (__->__)?#\d+\r?\n)*\r?\n", re.MULTILINE
 )
 
 # Delimeter for PR body
@@ -749,7 +749,7 @@ def generate_toc(st: list[StackEntry], current: str) -> str:
         return f" * {arrow}#{pr_id}\n"
 
     entries = (toc_entry(se) for se in st[::-1])
-    return f"Stacked PRs:\n{''.join(entries)}\n"
+    return f"Stacked PRs (oldest at bottom):\n{''.join(entries)}\n"
 
 
 def get_current_pr_body(e: StackEntry) -> str:
