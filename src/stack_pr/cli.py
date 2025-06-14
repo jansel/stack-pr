@@ -1533,7 +1533,8 @@ def main() -> None:  # noqa: PLR0912
             # Show the links for easy clicking
             command_view(common_args, short=True)
         elif args.command == "land":
-            command_land(common_args)
+            with maybe_stash_interactive_rebase():
+                command_land(common_args)
         elif args.command == "abandon":
             command_abandon(common_args)
         elif args.command == "view":
