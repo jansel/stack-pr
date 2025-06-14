@@ -1428,10 +1428,9 @@ def create_argparser(
         parents=[common_parser],
     )
     parser_submit.add_argument(
-        "--keep-body",
+        "--update-body",
         action="store_true",
-        default=config.getboolean("common", "keep_body", fallback=False),
-        help="Keep current PR body and only add/update cross links",
+        help="Update PR bodies commit messages",
     )
     parser_submit.add_argument(
         "-d",
@@ -1527,7 +1526,7 @@ def main() -> None:  # noqa: PLR0912
                     common_args,
                     draft=args.draft,
                     reviewer=args.reviewer,
-                    keep_body=args.keep_body,
+                    keep_body=not args.update_body,
                     draft_bitmask=args.draft_bitmask,
                 )
             # Show the links for easy clicking
