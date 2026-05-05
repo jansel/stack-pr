@@ -57,6 +57,7 @@ import logging
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from functools import cache
 from logging import getLogger
@@ -1198,7 +1199,147 @@ def command_land(args: CommonArgs) -> None:
 
     delete_local_branches(st, verbose=args.verbose)
 
+    # Fetch the latest remote state so the cleanup rebases see the just-landed
+    # commits and can drop them as empty during the rebase.
+    run_shell_command(
+        ["git", "fetch", "--prune", args.remote], quiet=not args.verbose
+    )
+
     # If local branch {target} exists, rebase it on the remote/target
+    if branch_exists(args.target):
+        run_shell_command(
+            ["git", "rebase", f"{args.remote}/{args.target}", args.target],
+            quiet=not args.verbose,
+        )
+    run_shell_command(
+        ["git", "rebase", f"{args.remote}/{args.target}", current_branch],
+        quiet=not args.verbose,
+    )
+
+    log(h(blue("SUCCESS!")))
+
+
+# ===----------------------------------------------------------------------=== #
+# Entry point for 'land-all' command
+# ===----------------------------------------------------------------------=== #
+def land_pr_with_retries(
+    e: StackEntry, remote: str, target: str, *, verbose: bool, wait: int, retries: int
+) -> None:
+    """Land a PR, retrying on subprocess failures (typically pending CI).
+
+    Tries to land the PR up to ``retries + 1`` times, sleeping ``wait`` seconds
+    between attempts. The most common cause of a transient failure is required
+    CI checks not having finished yet.
+    """
+    max_attempts = retries + 1
+    for attempt in range(1, max_attempts + 1):
+        try:
+            land_pr(e, remote=remote, target=target, verbose=verbose)
+        except SubprocessError:
+            if attempt >= max_attempts:
+                error(f"Failed to land PR {e.pr} after {max_attempts} attempts.")
+                raise
+            log(
+                b(
+                    f"Land attempt {attempt}/{max_attempts} failed; "
+                    f"waiting {wait}s and retrying..."
+                ),
+                level=1,
+            )
+            time.sleep(wait)
+        else:
+            return
+
+
+def command_land_all(args: CommonArgs, *, wait: int, retries: int) -> None:
+    """Entry point for 'land-all' command.
+
+    Lands every PR in the stack from bottom to top in a single invocation.
+    Each non-bottom PR is rebased onto target exactly once just before its
+    turn to land (rather than every time a PR below it lands), so the total
+    work is linear in the size of the stack.
+
+    Args:
+        args: CommonArgs object containing common command line arguments.
+        wait: Seconds to sleep after rebasing/pushing a PR (to give required
+            CI a chance to finish) and between retries when landing fails.
+        retries: Number of retries to attempt when landing a PR fails. The
+            total number of land attempts per PR is ``retries + 1``.
+    """
+    log(h("LAND-ALL"), level=1)
+
+    current_branch = get_current_branch_name()
+
+    if should_update_local_base(
+        head=args.head,
+        base=args.base,
+        remote=args.remote,
+        target=args.target,
+        verbose=args.verbose,
+    ):
+        update_local_base(
+            base=args.base,
+            remote=args.remote,
+            target=args.target,
+            verbose=args.verbose,
+        )
+        run_shell_command(["git", "checkout", current_branch], quiet=not args.verbose)
+
+    st = get_stack(base=args.base, head=args.head, verbose=args.verbose)
+    if not st:
+        log(h("Empty stack!"), level=1)
+        log(h(blue("SUCCESS!")), level=1)
+        return
+
+    set_base_branches(st, args.target)
+    print_stack(st, links=args.hyperlinks)
+
+    # Verify the entire stack upfront. The mergeable check on the bottom PR
+    # only rejects clearly-broken states (e.g. BLOCKED); transient CI states
+    # like UNKNOWN are accepted and we retry with backoff during the loop.
+    verify(st, check_base=True)
+
+    log(h(f"Landing {len(st)} PR(s)"), level=1)
+    for i, e in enumerate(st):
+        log(
+            h(f"--- PR {i + 1}/{len(st)} ---") + " " + e.pprint(links=args.hyperlinks),
+            level=1,
+        )
+
+        if i > 0:
+            # The previous PR was just landed, so target moved forward and this
+            # PR's branch needs to be rebased onto the new target. We also
+            # update its GitHub base to target so CI runs against the right
+            # base, and so the PR is in a valid state once the previous PR's
+            # branch is gone.
+            log(h(f"Rebasing onto {args.remote}/{args.target}"), level=1)
+            rebase_pr(e, remote=args.remote, target=args.target, verbose=args.verbose)
+            run_shell_command(
+                ["gh", "pr", "edit", e.pr, "-B", args.target],
+                quiet=not args.verbose,
+            )
+            log(b(f"Waiting {wait}s for CI..."), level=1)
+            time.sleep(wait)
+
+        land_pr_with_retries(
+            e,
+            remote=args.remote,
+            target=args.target,
+            verbose=args.verbose,
+            wait=wait,
+            retries=retries,
+        )
+
+    # All PRs have landed. Clean up local state.
+    run_shell_command(["git", "checkout", current_branch], quiet=not args.verbose)
+    delete_local_branches(st, verbose=args.verbose)
+
+    # Fetch the latest remote state so the cleanup rebases see the just-landed
+    # commits and can drop them as empty during the rebase.
+    run_shell_command(
+        ["git", "fetch", "--prune", args.remote], quiet=not args.verbose
+    )
+
     if branch_exists(args.target):
         run_shell_command(
             ["git", "rebase", f"{args.remote}/{args.target}", args.target],
@@ -1463,8 +1604,32 @@ def create_argparser(
 
     subparsers.add_parser(
         "land",
-        help="Land the current stack",
+        help="Land the bottom-most PR of the current stack",
         parents=[common_parser],
+    )
+    parser_land_all = subparsers.add_parser(
+        "land-all",
+        help="Land the entire stack in a loop",
+        parents=[common_parser],
+    )
+    parser_land_all.add_argument(
+        "--wait",
+        type=int,
+        default=config.getint("land-all", "wait", fallback=30),
+        help=(
+            "Seconds to wait between PRs to allow required CI to finish, and "
+            "between retries when landing fails (default: 30)."
+        ),
+    )
+    parser_land_all.add_argument(
+        "--retries",
+        type=int,
+        default=config.getint("land-all", "retries", fallback=10),
+        help=(
+            "Number of times to retry landing if the merge fails (e.g. because "
+            "required CI hasn't finished yet). Total attempts per PR is "
+            "retries + 1 (default: 10)."
+        ),
     )
     subparsers.add_parser(
         "abandon",
@@ -1534,6 +1699,11 @@ def main() -> None:  # noqa: PLR0912
         elif args.command == "land":
             with maybe_stash_interactive_rebase():
                 command_land(common_args)
+        elif args.command == "land-all":
+            with maybe_stash_interactive_rebase():
+                command_land_all(
+                    common_args, wait=args.wait, retries=args.retries
+                )
         elif args.command == "abandon":
             command_abandon(common_args)
         elif args.command == "view":

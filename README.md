@@ -130,6 +130,10 @@ That's it!
   the corresponding local and remote branches and closes the PRs.
 - `land` - merge the bottom-most PR in the current stack and rebase the rest of
   the stack on the latest main.
+- `land-all` - merge every PR in the current stack from bottom to top in a
+  single command, waiting for required CI between PRs and retrying on
+  transient failures. Each PR in the stack is rebased exactly once (just
+  before its turn to land), so the work is linear in the size of the stack.
 
 A usual workflow is the following:
 
@@ -360,6 +364,27 @@ Land the bottom-most PR in the current stack.
 
 Takes no additional arguments beyond common ones.
 
+#### land-all
+
+Land every PR in the current stack from bottom to top.
+
+After landing a PR (other than the first), the next PR in the stack is rebased
+onto the target branch and the command waits for required CI to finish before
+attempting to land it. If the merge fails (e.g. because required CI hasn't
+finished yet), the command waits and retries.
+
+Each PR is rebased exactly once just before its turn to land, so the total
+amount of branch updates is linear in the size of the stack — significantly
+less than running `land` repeatedly, which would rebase every PR after every
+land.
+
+Options:
+
+- `--wait`: Seconds to wait between PRs to allow required CI to finish, and
+  between retries when landing fails (default: 30).
+- `--retries`: Number of times to retry landing if the merge fails. Total
+  attempts per PR is `retries + 1` (default: 10).
+
 #### abandon
 
 Abandon the current stack.
@@ -392,4 +417,7 @@ remote=origin
 target=main
 reviewer=GithubHandle1,GithubHandle2
 branch_name_template=$USERNAME/$BRANCH
+[land-all]
+wait=30
+retries=10
 ```
