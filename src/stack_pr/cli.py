@@ -82,6 +82,7 @@ from stack_pr.shell_commands import (
     get_command_output,
     run_shell_command,
 )
+from stack_pr.version import version_string
 
 logger = getLogger(__name__)
 
@@ -1724,6 +1725,7 @@ def create_argparser(
 ) -> argparse.ArgumentParser:
     """Helper for CL option definition and parsing logic."""
     parser = argparse.ArgumentParser()
+    parser.add_argument("--version", action="version", version=version_string())
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
 
     common_parser = argparse.ArgumentParser(add_help=False)
@@ -1885,8 +1887,8 @@ def get_config_file() -> str:
 
 def main() -> None:  # noqa: PLR0912, PLR0915
     argv = sys.argv[1:] or ["submit"]
-    # Upgrade is independent of repository state and local configuration.
-    if argv[0] == "upgrade":
+    # Installation commands are independent of repository state and configuration.
+    if argv[0] in {"upgrade", "--version"}:
         create_argparser(configparser.ConfigParser()).parse_args(argv)
         command_upgrade()
         return
