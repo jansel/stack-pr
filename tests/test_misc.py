@@ -1,8 +1,5 @@
-import sys
-import tempfile
+from collections.abc import Iterator
 from pathlib import Path
-
-sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 import pytest
 
@@ -10,16 +7,20 @@ from stack_pr.cli import (
     generate_available_branch_name,
     generate_branch_name,
     get_branch_id,
+    get_branch_name_base,
     get_gh_username,
     get_taken_branch_ids,
 )
 from stack_pr.git import git_config, is_rebase_in_progress
 
 
-@pytest.fixture(scope="module")
-def username() -> str:
-    git_config.set_username_override("TestBot")
-    return get_gh_username()
+@pytest.fixture(autouse=True)
+def username(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    monkeypatch.setattr(git_config, "username_override", "TestBot")
+    monkeypatch.setattr("stack_pr.cli.get_current_branch_name", lambda: "feature")
+    get_branch_name_base.cache_clear()
+    yield get_gh_username()
+    get_branch_name_base.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -93,33 +94,13 @@ def test_generate_available_branch_name() -> None:
     assert generate_available_branch_name(refs, template) == "TestBot-stack-135"
 
 
-def test_is_rebase_in_progress() -> None:
-    """Test the is_rebase_in_progress function with different git states."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        repo_dir = Path(temp_dir)
-        git_dir = repo_dir / ".git"
-        git_dir.mkdir()
+def test_is_rebase_in_progress(git_repo: Path) -> None:
+    git_dir = git_repo / ".git"
+    assert not is_rebase_in_progress(git_repo)
 
-        # Test no rebase in progress
-        assert not is_rebase_in_progress(repo_dir)
-
-        # Test rebase-merge directory exists
-        rebase_merge_dir = git_dir / "rebase-merge"
-        rebase_merge_dir.mkdir()
-        assert is_rebase_in_progress(repo_dir)
-
-        # Clean up and test rebase-apply directory
-        rebase_merge_dir.rmdir()
-        assert not is_rebase_in_progress(repo_dir)
-
-        rebase_apply_dir = git_dir / "rebase-apply"
-        rebase_apply_dir.mkdir()
-        assert is_rebase_in_progress(repo_dir)
-
-        # Test both directories exist
-        rebase_merge_dir.mkdir()
-        assert is_rebase_in_progress(repo_dir)
-
-        # Test with None repo_dir (current directory)
-        # This should not raise an error even if .git doesn't exist in cwd
-        assert not is_rebase_in_progress(None)
+    for state in ("rebase-merge", "rebase-apply"):
+        state_dir = git_dir / state
+        state_dir.mkdir()
+        assert is_rebase_in_progress(git_repo)
+        state_dir.rmdir()
+        assert not is_rebase_in_progress(git_repo)

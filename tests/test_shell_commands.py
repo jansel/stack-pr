@@ -1,8 +1,5 @@
 import subprocess
 import sys
-from pathlib import Path
-
-sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 import pytest
 
@@ -81,3 +78,26 @@ def test_cmd_fail_quiet_false_print(capfd: pytest.CaptureFixture) -> None:
     captured = capfd.readouterr()
     assert "stdout_msg" in captured.out
     assert "stderr_msg" in captured.err
+
+
+def test_cmd_accepts_generator() -> None:
+    command = (arg for arg in [sys.executable, "-c", "print('hello')"])
+    result = run_shell_command(command, quiet=True)
+    assert result.stdout == b"hello\n"
+
+
+def test_quiet_respects_explicit_streams() -> None:
+    result = run_shell_command(
+        [sys.executable, "-c", "print('hello')"],
+        quiet=True,
+        stdout=subprocess.DEVNULL,
+    )
+    assert result.stdout is None
+    assert result.stderr == b""
+
+
+def test_quiet_with_capture_output() -> None:
+    result = run_shell_command(
+        [sys.executable, "-c", "print('hello')"], quiet=True, capture_output=True
+    )
+    assert result.stdout == b"hello\n"

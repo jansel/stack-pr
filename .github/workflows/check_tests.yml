@@ -1,19 +1,31 @@
 name: Check Tests
-on: [ pull_request ]
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      - name: Set up Python
-        uses: actions/setup-python@65d7f2d534ac1bc67fcd62888c5f4f3d2cb2b236 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: '3.x'  # Specify the Python version you want to use
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest
+        run: python -m pip install --upgrade '.[dev]'
       - name: Run tests
-        run: pytest tests/
-
+        run: python -m pytest
+      - name: Build source and wheel distributions
+        run: python -m build

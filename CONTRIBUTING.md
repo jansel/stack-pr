@@ -1,17 +1,30 @@
-# Contributions
+# Development
 
-Thank you for your interest in contributing to this project! We appreciate the time and effort you're willing to invest.
+This is Jason Ansel's private fork of [modular/stack-pr](https://github.com/modular/stack-pr).
+File fork-specific issues and pull requests in [jansel/stack-pr](https://github.com/jansel/stack-pr).
 
-## Filing Issues
+Use Python 3.10 or newer and an isolated environment:
 
-If you encounter bugs or have suggestions, please feel free to open an issue. Clear, detailed reports help us fix things faster!
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --upgrade -e '.[dev]'
+```
 
-## Pull Requests (PRs)
+Run the checks used by CI:
 
-We welcome PRs for bug fixes, enhancements, and new features. Please fork the repository and submit your PR when you're ready. Be sure to check the existing issues to see if a similar change is already being worked on.
+```bash
+python -m ruff check .
+python -m ruff format --check .
+python -m mypy src tests
+python -m pytest
+python -m build
+```
 
-Please note that the project is maintained during our team's available time, so responses and reviews might take a little longer. We will review all contributions and respond as soon as possible.
+The test suite uses temporary Git repositories and mocked GitHub commands;
+it does not submit or merge real PRs. The build uses `pdm-backend` to derive
+the version from Git history; the PDM CLI is not required.
 
-When your PR is ready to be merged, one of our team members will merge it on your behalf.
-
-Thank you for contributing and helping to improve this project. We look forward to seeing your ideas!
+This fork is installed from GitHub. CI builds packages for validation and
+does not publish releases to PyPI.

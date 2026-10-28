@@ -4,12 +4,12 @@ authors = [
     {name = "Modular Inc", email = "hello@modular.com"},
 ]
 maintainers = [
-    {name = "Modular Inc", email = "hello@modular.com"}
+    {name = "Jason Ansel"}
 ]
-description = "Stacked PR CLI for Github"
+description = "Jason Ansel's private fork of the stacked PR CLI for GitHub"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = ["stacked-prs", "github", "pull-requests", "stack-pr", "git", "version-control"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -20,34 +20,36 @@ classifiers = [
     "Environment :: Console",
     "Topic :: Utilities",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
 # Version is dynamically set by pdm by the SCM version
 dynamic = ["version"]
-dependencies = ["typing_extensions; python_version<\"3.13\""]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "pytest-mock",
-    "mypy",
-    "ruff",
+    "build>=1.6.1",
+    "pytest>=9.2.0",
+    "mypy>=2.4.1",
+    "ruff>=0.17.3",
 ]
 
 [project.urls]
-Homepage = "https://github.com/modular/stack-pr"
-Repository = "https://github.com/modular/stack-pr"
-"Bug Tracker" = "https://github.com/modular/stack-pr/issues"
+Homepage = "https://github.com/jansel/stack-pr"
+Repository = "https://github.com/jansel/stack-pr"
+"Bug Tracker" = "https://github.com/jansel/stack-pr/issues"
+Upstream = "https://github.com/modular/stack-pr"
 
 [project.scripts]
 stack-pr = "stack_pr.cli:main"
 
 [build-system]
-requires = ["pdm-backend"]
+requires = ["pdm-backend>=2.5.0"]
 build-backend = "pdm.backend"
 
 [tool.pdm]
@@ -57,26 +59,12 @@ distribution = true
 source = "scm"
 fallback_version = "0.1.0"
 
-[tool.pixi.project]
-channels = ["conda-forge"]
-platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
-
-[tool.pixi.pypi-dependencies]
-stack-pr = { path = ".", editable = true }
-pdm = ">=2.17.1,<2.18"
-
-[tool.pixi.tasks]
-
-[tool.pixi.dependencies]
-python = "3.9.*"
-
 [tool.ruff]
 
 # Same as Black.
 line-length = 88
 
-# Assume Python 3.9
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 # Enable pycodestyle (`E`), Pyflakes (`F`), and isort (`I`) codes
@@ -178,15 +166,13 @@ multiline-quotes = "double"
 ]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v"
 
 [tool.mypy]
 # Let's be strict.
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

@@ -1,23 +1,14 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from collections.abc import Iterable
 from logging import getLogger
 from pathlib import Path
-
-if sys.version_info >= (3, 13):
-    # Unpack moved to typing
-    from typing import Any, Union
-else:
-    from typing import Union
-
-    from typing_extensions import Any
-
+from typing import Any
 
 logger = getLogger(__name__)
 
-ShellCommand = Iterable[Union[str, Path]]
+ShellCommand = Iterable[str | Path]
 
 
 def run_shell_command(
@@ -43,8 +34,8 @@ def run_shell_command(
     """
     if "shell" in kwargs:
         raise ValueError("shell support has been removed")
-    _ = subprocess.list2cmdline(cmd)
-    if quiet:
+    cmd = list(map(str, cmd))
+    if quiet and not kwargs.get("capture_output"):
         # If quiet, capture stdout and stderr so they are not printed to the console
         # But respects explicit stderr/stdout settings at the call sites
         if "stderr" not in kwargs:
@@ -52,7 +43,7 @@ def run_shell_command(
         if "stdout" not in kwargs:
             kwargs["stdout"] = subprocess.PIPE
     logger.debug("Running: %s", cmd)
-    return subprocess.run(list(map(str, cmd)), **kwargs, check=check)
+    return subprocess.run(cmd, **kwargs, check=check)
 
 
 def get_command_output(

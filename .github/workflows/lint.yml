@@ -1,15 +1,24 @@
 name: Lint and check
-on: [ pull_request ]
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
-  ruff:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      
-      # Run ruff linter
-      - uses: chartboost/ruff-action@e18ae971ccee1b2d7bbef113930f00c670b78da4 # v1
-      
-      # Run ruff format
-      - uses: chartboost/ruff-action@e18ae971ccee1b2d7bbef113930f00c670b78da4 # v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          args: 'format --check'
+          python-version: '3.15'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade '.[dev]'
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m mypy src tests

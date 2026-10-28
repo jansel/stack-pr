@@ -96,17 +96,17 @@ def get_current_branch_name(repo_dir: Path | None = None) -> str:
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir
         ).strip()
         if result == "HEAD":
-            # Detached HEAD state, return a hash so we can cleanup after ourselves properly, since
-            #    git checkout HEAD
-            # is a no-op.
+            # Return a hash for detached HEAD so cleanup can restore it:
+            # `git checkout HEAD` would be a no-op.
             result = get_command_output(
                 ["git", "rev-parse", "HEAD"], cwd=repo_dir
             ).strip()
-        return result
     except subprocess.CalledProcessError as e:
         if e.returncode == GIT_NOT_A_REPO_ERROR:
             raise GitError("Not inside a valid git repository.") from e
         raise
+    else:
+        return result
 
 
 def get_repo_root(repo_dir: Path | None = None) -> Path:
@@ -253,5 +253,7 @@ def is_rebase_in_progress(repo_dir: Path | None = None) -> bool:
     Returns:
         True if a rebase is in progress, False otherwise.
     """
-    git_dir = Path(".git") if repo_dir is None else repo_dir / ".git"
-    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+    git_dir = Path(
+        get_command_output(["git", "rev-parse", "--absolute-git-dir"], cwd=repo_dir)
+    )
+    return any((git_dir / state).is_dir() for state in ("rebase-merge", "rebase-apply"))

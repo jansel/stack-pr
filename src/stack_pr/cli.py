@@ -582,13 +582,18 @@ def maybe_stash_interactive_rebase() -> Iterator[None]:
     rebase state so that we can restore it later. This is useful when
     the user is trying to submit only part of their commit history.
     """
-    if os.path.exists(".git/rebase-merge"):
+    rebase_dir = Path(
+        get_command_output(["git", "rev-parse", "--git-path", "rebase-merge"])
+    )
+    stashed_dir = rebase_dir.with_name("rebase-merge-stashed")
+    if rebase_dir.exists():
+        if stashed_dir.exists():
+            raise RuntimeError(f"Saved rebase state already exists: {stashed_dir}")
+        rebase_dir.rename(stashed_dir)
         try:
-            assert not os.path.exists(".git/rebase-merge-stashed")
-            os.rename(".git/rebase-merge", ".git/rebase-merge-stashed")
             yield
         finally:
-            os.rename(".git/rebase-merge-stashed", ".git/rebase-merge")
+            stashed_dir.rename(rebase_dir)
     else:
         yield
 
@@ -703,7 +708,10 @@ def set_head_branches(
 ) -> None:
     """Set the head ref for each stack entry if it doesn't already have one."""
 
-    run_shell_command(["git", "fetch", "--prune", remote, f"+refs/heads/*:refs/remotes/{remote}/*"], quiet=not verbose)
+    run_shell_command(
+        ["git", "fetch", "--prune", remote, f"+refs/heads/*:refs/remotes/{remote}/*"],
+        quiet=not verbose,
+    )
     available_name = get_available_branch_name(remote, branch_name_template)
     for e in filter(lambda e: not e.has_head(), st):
         e.head = available_name
@@ -856,7 +864,7 @@ def is_draft_pr(e: StackEntry) -> bool:
     out = get_command_output(
         ["gh", "pr", "view", e.pr, "--json", "isDraft"],
     )
-    return json.loads(out)["isDraft"]
+    return bool(json.loads(out)["isDraft"])
 
 
 # Temporarily set base branches of existing PRs to the bottom of the stack.
@@ -1334,9 +1342,7 @@ def command_land(args: CommonArgs) -> None:
 
     # Fetch the latest remote state so the cleanup rebases see the just-landed
     # commits and can drop them as empty during the rebase.
-    run_shell_command(
-        ["git", "fetch", "--prune", args.remote], quiet=not args.verbose
-    )
+    run_shell_command(["git", "fetch", "--prune", args.remote], quiet=not args.verbose)
 
     # If local branch {target} exists, rebase it on the remote/target
     if branch_exists(args.target):
@@ -1469,9 +1475,7 @@ def command_land_all(args: CommonArgs, *, wait: int, retries: int) -> None:
 
     # Fetch the latest remote state so the cleanup rebases see the just-landed
     # commits and can drop them as empty during the rebase.
-    run_shell_command(
-        ["git", "fetch", "--prune", args.remote], quiet=not args.verbose
-    )
+    run_shell_command(["git", "fetch", "--prune", args.remote], quiet=not args.verbose)
 
     if branch_exists(args.target):
         run_shell_command(
@@ -1608,7 +1612,7 @@ def print_tips_after_view(st: list[StackEntry], args: CommonArgs) -> None:
 # ===----------------------------------------------------------------------=== #
 # Entry point for 'view' command
 # ===----------------------------------------------------------------------=== #
-def command_view(args: CommonArgs, short=False) -> None:
+def command_view(args: CommonArgs, *, short: bool = False) -> None:
     if not short:
         log(h("VIEW"))
 
@@ -1653,7 +1657,7 @@ def command_view(args: CommonArgs, short=False) -> None:
 # ===----------------------------------------------------------------------=== #
 # CONFIG
 # ===----------------------------------------------------------------------=== #
-def command_config(config_file: str, setting: str) -> None:
+def command_config(config_file: str | Path, setting: str) -> None:
     """Set a configuration value in the config file.
 
     Args:
@@ -1840,7 +1844,7 @@ def load_config(config_file: str | Path) -> configparser.ConfigParser:
     return config
 
 
-def main() -> None:  # noqa: PLR0912
+def main() -> None:  # noqa: PLR0912, PLR0915
     repo_config_file = get_repo_root() / ".stack-pr.cfg"
     config_file = os.getenv("STACKPR_CONFIG", repo_config_file)
     config = load_config(config_file)
@@ -1912,9 +1916,7 @@ def main() -> None:  # noqa: PLR0912
                 command_land(common_args)
         elif args.command == "land-all":
             with maybe_stash_interactive_rebase():
-                command_land_all(
-                    common_args, wait=args.wait, retries=args.retries
-                )
+                command_land_all(common_args, wait=args.wait, retries=args.retries)
         elif args.command == "abandon":
             command_abandon(common_args)
         elif args.command == "view":
