@@ -67,6 +67,7 @@ from re import Pattern
 from subprocess import SubprocessError
 
 from stack_pr.git import (
+    GitError,
     branch_exists,
     check_gh_installed,
     get_current_branch_name,
@@ -81,6 +82,8 @@ from stack_pr.shell_commands import (
 )
 
 logger = getLogger(__name__)
+
+FORK_INSTALL_URL = "git+https://github.com/jansel/stack-pr.git@main"
 
 # Global verbose flag
 _verbose = False
@@ -1692,6 +1695,22 @@ def command_config(config_file: str | Path, setting: str) -> None:
 
 
 # ===----------------------------------------------------------------------=== #
+# UPGRADE
+# ===----------------------------------------------------------------------=== #
+def command_upgrade() -> None:
+    """Upgrade this installation from the fork's main branch."""
+    print(f"Upgrading stack-pr from {FORK_INSTALL_URL}", flush=True)
+    result = run_shell_command(
+        [sys.executable, "-m", "pip", "install", "--upgrade", FORK_INSTALL_URL],
+        quiet=False,
+        check=False,
+    )
+    if result.returncode:
+        sys.exit(result.returncode)
+    print("stack-pr is up to date.")
+
+
+# ===----------------------------------------------------------------------=== #
 # Main entry point
 # ===----------------------------------------------------------------------=== #
 
@@ -1834,6 +1853,12 @@ def create_argparser(
         help="Configuration setting in format <section>.<key>=<value>",
     )
 
+    subparsers.add_parser(
+        "upgrade",
+        help="Upgrade stack-pr from github.com/jansel/stack-pr (main)",
+        description="Install the latest fork using pip in this Python environment.",
+    )
+
     return parser
 
 
@@ -1844,13 +1869,29 @@ def load_config(config_file: str | Path) -> configparser.ConfigParser:
     return config
 
 
+def get_config_file() -> str:
+    config_file = os.getenv("STACKPR_CONFIG")
+    if config_file is not None:
+        return config_file
+    try:
+        return str(get_repo_root() / ".stack-pr.cfg")
+    except (GitError, FileNotFoundError):
+        return ".stack-pr.cfg"
+
+
 def main() -> None:  # noqa: PLR0912, PLR0915
-    repo_config_file = get_repo_root() / ".stack-pr.cfg"
-    config_file = os.getenv("STACKPR_CONFIG", repo_config_file)
+    argv = sys.argv[1:] or ["submit"]
+    # Upgrade is independent of repository state and local configuration.
+    if argv[0] == "upgrade":
+        create_argparser(configparser.ConfigParser()).parse_args(argv)
+        command_upgrade()
+        return
+
+    config_file = get_config_file()
     config = load_config(config_file)
 
     parser = create_argparser(config)
-    args = parser.parse_args(sys.argv[1:] or ["submit"])
+    args = parser.parse_args(argv)
 
     # Set global verbose flag (if present - config command doesn't have it)
     if hasattr(args, "verbose"):
