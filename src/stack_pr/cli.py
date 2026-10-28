@@ -57,14 +57,13 @@ import logging
 import os
 import re
 import sys
-import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from logging import getLogger
 from pathlib import Path
 from re import Pattern
-from subprocess import SubprocessError
+from subprocess import CalledProcessError, SubprocessError
 
 from stack_pr.git import (
     GitError,
@@ -78,6 +77,7 @@ from stack_pr.git import (
     restore_stash,
     stash_changes,
 )
+from stack_pr.landing import LandingError, land_when_ready
 from stack_pr.shell_commands import (
     get_command_output,
     run_shell_command,
@@ -510,8 +510,11 @@ def set_base_branches(st: list[StackEntry], target: str) -> None:
         e.base, prev_branch = prev_branch, e.head
 
 
-def verify(st: list[StackEntry], *, check_base: bool = False) -> None:
+def verify(
+    st: list[StackEntry], *, check_base: bool = False, allow_merged: bool = False
+) -> list[StackEntry]:
     log(h("Verifying stack info"), level=2)
+    remaining: list[StackEntry] = []
     for index, e in enumerate(st):
         if e.has_missing_info():
             error(ERROR_STACKINFO_MISSING.format(**locals()))
@@ -536,6 +539,14 @@ def verify(st: list[StackEntry], *, check_base: bool = False) -> None:
             if required_field not in d:
                 error(ERROR_STACKINFO_MALFORMED_RESPONSE.format(**locals()))
                 raise RuntimeError
+
+        if allow_merged and d["state"] == "MERGED":
+            if remaining:
+                raise LandingError(
+                    f"{e.pr} was merged out of stack order. Rebase and submit the remaining commits first."
+                )
+            log(f"Already merged, skipping {e.pr}")
+            continue
 
         if d["state"] != "OPEN":
             error(ERROR_STACKINFO_PR_NOT_OPEN.format(**locals()))
@@ -565,6 +576,8 @@ def verify(st: list[StackEntry], *, check_base: bool = False) -> None:
         ):
             error(ERROR_STACKINFO_PR_NOT_MERGEABLE.format(**locals()))
             raise RuntimeError
+        remaining.append(e)
+    return remaining
 
 
 def print_stack(st: list[StackEntry], *, links: bool, level: int = 1) -> None:
@@ -581,6 +594,13 @@ def draft_bitmask_type(value: str) -> list[bool]:
 
     # Convert to list of booleans
     return [bool(int(bit)) for bit in value]
+
+
+def nonnegative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("Value must be nonnegative.")
+    return number
 
 
 @contextlib.contextmanager
@@ -1243,7 +1263,23 @@ def rebase_pr(e: StackEntry, remote: str, target: str, *, verbose: bool) -> None
     ]
     try:
         run_shell_command(cmd, quiet=not verbose)
-    except Exception:
+    except BaseException as exc:
+        conflicts = get_command_output(
+            ["git", "diff", "--name-only", "--diff-filter=U"]
+        )
+        if is_rebase_in_progress():
+            abort = run_shell_command(
+                ["git", "rebase", "--abort"], quiet=True, check=False
+            )
+            if abort.returncode:
+                raise LandingError(
+                    f"Rebase failed for {e.pr} and could not be aborted. Run git rebase --abort before resuming."
+                ) from exc
+        if conflicts and isinstance(exc, CalledProcessError):
+            raise LandingError(
+                f"Merge conflicts while rebasing {e.pr}: {', '.join(conflicts.splitlines())}. "
+                "The rebase was aborted. Resolve conflicts locally, submit, and rerun land-all; not retrying."
+            ) from exc
         error(ERROR_CANT_REBASE.format(**locals()))
         raise
     run_shell_command(
@@ -1265,6 +1301,10 @@ def land_pr(e: StackEntry, remote: str, target: str, *, verbose: bool) -> None:
     # Switch PR base branch to 'main'
     run_shell_command(["gh", "pr", "edit", e.pr, "-B", target], quiet=not verbose)
 
+    merge_pr(e, verbose=verbose)
+
+
+def merge_pr(e: StackEntry, head_oid: str | None = None, *, verbose: bool) -> None:
     # Form the commit message: it should contain the original commit message
     # and nothing else.
     pr_body = RE_STACK_INFO_LINE.sub("", e.commit.commit_msg())
@@ -1275,11 +1315,14 @@ def land_pr(e: StackEntry, remote: str, target: str, *, verbose: bool) -> None:
     pr_id = last(e.pr)
     title = f"{lines[0]} (#{pr_id})"
     pr_body = "\n".join(lines[1:]) or " "
-    run_shell_command(
-        ["gh", "pr", "merge", e.pr, "--squash", "-t", title, "-F", "-"],
-        input=pr_body.encode(),
-        quiet=not verbose,
-    )
+    command = ["gh", "pr", "merge", e.pr, "--squash", "-t", title, "-F", "-"]
+    if head_oid is not None:
+        command.extend(["--match-head-commit", head_oid])
+    # Capture failures even in verbose mode so transport errors can be classified.
+    result = run_shell_command(command, input=pr_body.encode(), quiet=True)
+    if verbose:
+        print(result.stdout.decode("utf-8"), end="")
+        print(result.stderr.decode("utf-8"), end="", file=sys.stderr)
 
 
 def delete_local_branches(st: list[StackEntry], *, verbose: bool) -> None:
@@ -1392,35 +1435,6 @@ def command_land(args: CommonArgs) -> None:
 # ===----------------------------------------------------------------------=== #
 # Entry point for 'land-all' command
 # ===----------------------------------------------------------------------=== #
-def land_pr_with_retries(
-    e: StackEntry, remote: str, target: str, *, verbose: bool, wait: int, retries: int
-) -> None:
-    """Land a PR, retrying on subprocess failures (typically pending CI).
-
-    Tries to land the PR up to ``retries + 1`` times, sleeping ``wait`` seconds
-    between attempts. The most common cause of a transient failure is required
-    CI checks not having finished yet.
-    """
-    max_attempts = retries + 1
-    for attempt in range(1, max_attempts + 1):
-        try:
-            land_pr(e, remote=remote, target=target, verbose=verbose)
-        except SubprocessError:
-            if attempt >= max_attempts:
-                error(f"Failed to land PR {e.pr} after {max_attempts} attempts.")
-                raise
-            log(
-                b(
-                    f"Land attempt {attempt}/{max_attempts} failed; "
-                    f"waiting {wait}s and retrying..."
-                ),
-                level=1,
-            )
-            time.sleep(wait)
-        else:
-            return
-
-
 def command_land_all(args: CommonArgs, *, wait: int, retries: int) -> None:
     """Entry point for 'land-all' command.
 
@@ -1431,11 +1445,11 @@ def command_land_all(args: CommonArgs, *, wait: int, retries: int) -> None:
 
     Args:
         args: CommonArgs object containing common command line arguments.
-        wait: Seconds to sleep after rebasing/pushing a PR (to give required
-            CI a chance to finish) and between retries when landing fails.
-        retries: Number of retries to attempt when landing a PR fails. The
-            total number of land attempts per PR is ``retries + 1``.
+        wait: Seconds between required-check and merge-status polls.
+        retries: Number of additional polls after the initial readiness check.
     """
+    if wait < 0 or retries < 0:
+        raise ValueError("wait and retries must be nonnegative")
     log(h("LAND-ALL"), level=1)
 
     current_branch = get_current_branch_name()
@@ -1464,38 +1478,29 @@ def command_land_all(args: CommonArgs, *, wait: int, retries: int) -> None:
     set_base_branches(st, args.target)
     print_stack(st, links=args.hyperlinks)
 
-    # Verify the entire stack upfront. The mergeable check on the bottom PR
-    # only rejects clearly-broken states (e.g. BLOCKED); transient CI states
-    # like UNKNOWN are accepted and we retry with backoff during the loop.
-    verify(st, check_base=True)
+    # Already merged PRs form a prefix after an interrupted run. The first
+    # remaining PR can still point at a deleted stack branch; prepare it below.
+    remaining = verify(st, allow_merged=True)
 
-    log(h(f"Landing {len(st)} PR(s)"), level=1)
-    for i, e in enumerate(st):
+    log(h(f"Landing {len(remaining)} PR(s)"), level=1)
+    for i, e in enumerate(remaining):
         log(
-            h(f"--- PR {i + 1}/{len(st)} ---") + " " + e.pprint(links=args.hyperlinks),
-            level=1,
+            h(f"--- PR {i + 1}/{len(remaining)} ---")
+            + " "
+            + e.pprint(links=args.hyperlinks)
         )
-
-        if i > 0:
-            # The previous PR was just landed, so target moved forward and this
-            # PR's branch needs to be rebased onto the new target. We also
-            # update its GitHub base to target so CI runs against the right
-            # base, and so the PR is in a valid state once the previous PR's
-            # branch is gone.
+        if i > 0 or len(remaining) < len(st):
             log(h(f"Rebasing onto {args.remote}/{args.target}"), level=1)
             rebase_pr(e, remote=args.remote, target=args.target, verbose=args.verbose)
-            run_shell_command(
-                ["gh", "pr", "edit", e.pr, "-B", args.target],
-                quiet=not args.verbose,
-            )
-            log(b(f"Waiting {wait}s for CI..."), level=1)
-            time.sleep(wait)
-
-        land_pr_with_retries(
-            e,
-            remote=args.remote,
-            target=args.target,
-            verbose=args.verbose,
+        # Set the final base before examining CI, rather than changing it at
+        # merge time after checks have passed against a different base.
+        run_shell_command(
+            ["gh", "pr", "edit", e.pr, "-B", args.target], quiet=not args.verbose
+        )
+        land_when_ready(
+            e.pr,
+            args.target,
+            partial(merge_pr, e, verbose=args.verbose),
             wait=wait,
             retries=retries,
         )
@@ -1845,21 +1850,19 @@ def create_argparser(
         )
         parser_land_all.add_argument(
             "--wait",
-            type=int,
-            default=config.getint("land-all", "wait", fallback=30),
+            type=nonnegative_int,
+            default=config.get("land-all", "wait", fallback="30"),
             help=(
-                "Seconds to wait between PRs to allow required CI to finish, and "
-                "between retries when landing fails (default: 30)."
+                "Seconds between checks of CI and merge status (default: 30; minimum: 0)."
             ),
         )
         parser_land_all.add_argument(
             "--retries",
-            type=int,
-            default=config.getint("land-all", "retries", fallback=10),
+            type=nonnegative_int,
+            default=config.get("land-all", "retries", fallback="10"),
             help=(
-                "Number of times to retry landing if the merge fails (e.g. because "
-                "required CI hasn't finished yet). Total attempts per PR is "
-                "retries + 1 (default: 10)."
+                "Number of status rechecks per PR after the initial check "
+                "(default: 10; minimum: 0)."
             ),
         )
     subparsers.add_parser(
@@ -1908,6 +1911,21 @@ def get_config_file() -> str:
         return ".stack-pr.cfg"
 
 
+def restore_original_branch(
+    branch: str, saved_stash: str | None, *, verbose: bool
+) -> str | None:
+    restored = run_shell_command(
+        ["git", "checkout", branch], quiet=not verbose, check=False
+    )
+    if restored.returncode and saved_stash is not None:
+        error(
+            f"Could not return to {branch}; stash {saved_stash} is preserved. "
+            f"After recovering the branch, run: git stash apply --index {saved_stash}"
+        )
+        return None
+    return saved_stash
+
+
 def main() -> None:  # noqa: PLR0912, PLR0915
     argv = sys.argv[1:] or ["submit"]
     # Installation commands are independent of repository state and configuration.
@@ -1925,12 +1943,6 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     # Set global verbose flag (if present - config command doesn't have it)
     if hasattr(args, "verbose"):
         set_verbose(args.verbose)
-
-    if not args.command:
-        args.command = "submit"
-        print(h(red("Invalid usage of the stack-pr command.")))
-        parser.print_help()
-        return
 
     # Handle config command early since it doesn't need git repo setup
     if args.command == "config":
@@ -1988,11 +2000,14 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         else:
             print(h(red("Unknown command: " + args.command)))
             return
-    except Exception as exc:
+    except BaseException as exc:
         # If something failed, checkout the original branch
-        run_shell_command(
-            ["git", "checkout", current_branch], quiet=not common_args.verbose
+        saved_stash = restore_original_branch(
+            current_branch, saved_stash, verbose=common_args.verbose
         )
+        if isinstance(exc, LandingError):
+            error(str(exc))
+            sys.exit(1)
         if isinstance(exc, SubprocessError):
             print_cmd_failure_details(exc)
         raise
