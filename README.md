@@ -1,464 +1,242 @@
-# Stacked PRs for GitHub
+# stack-pr — Jason Ansel's private fork
 
-This is a command-line tool that helps you create multiple GitHub
-pull requests (PRs) all at once, with a stacked order of dependencies.
+This is my private fork of [Modular's stack-pr](https://github.com/modular/stack-pr),
+maintained at [jansel/stack-pr](https://github.com/jansel/stack-pr).
+It creates a GitHub pull request for each commit in a stack, with each PR based
+on the previous one so reviewers see only that commit's changes.
 
-Imagine that we have a change `A` and a change `B` depending on `A`, and we
-would like to get them both reviewed. Without stacked PRs one would have to
-create two PRs: `A` and `A+B`. The second PR would be difficult to review as it
-includes all the changes simultaneously. With stacked PRs the first PR will
-have only the change `A`, and the second PR will only have the change `B`. With
-stacked PRs one can group related changes together making them easier to
-review.
+## Differences from upstream
 
-Example:
+This fork includes upstream changes through
+[`57e425c`](https://github.com/modular/stack-pr/commit/57e425c26d112b8aa458c8d681e2ea511a426688),
+plus these workflow changes:
 
-![StackedPRExample1](https://modular-assets.s3.amazonaws.com/images/stackpr/example_0.png)
+- **Default submission:** running `stack-pr` with no arguments submits the stack
+  and prints the resulting PRs.
+- **Preserve PR descriptions:** submission keeps existing PR bodies and refreshes
+  their cross-links. Use `--update-body` to replace bodies from commit messages;
+  upstream uses `--keep-body` to opt into preserving them. Titles still update.
+- **Interactive rebases:** submit and land commands can run while paused during
+  `git rebase -i`. The fork temporarily saves and restores the rebase state,
+  including in linked worktrees. Upstream rejects submission during a rebase.
+  Resolve conflicts and commit changes before submitting.
+- **Land the entire stack:** `land-all` merges from bottom to top, rebasing each
+  remaining PR once just before its turn, with configurable waits and retries.
+  Upstream's `land.style=disable` setting disables both `land` and `land-all` here.
+- **Visible PR URLs:** each PR's full URL appears on its own line, including when
+  terminal hyperlinks are disabled. Multi-PR descriptions label the stack
+  “oldest at bottom.”
+- **Restricted fetch configurations:** stack branches are fetched explicitly,
+  including when `git remote set-branches origin main` restricts normal fetches.
+- **Upgrade from GitHub:** `stack-pr upgrade` installs the latest `main` from
+  this fork into the current installation's Python environment.
 
-## Installation
+The upstream merge also brings the `config` command, repository-root config
+lookup, optional usage tips, target-branch diagnostics, temporary draft status
+while updating existing PRs, and quieter output.
 
-### Dependencies
+The fork requires Python 3.10+, has no Python runtime dependencies, and uses
+updated build and development tools. It is distributed from GitHub; installing
+`stack-pr` by name from PyPI installs the upstream distribution.
 
-This is a non-comprehensive list of dependencies required by `stack-pr.py`:
+## Install or upgrade this fork
 
-- Install `gh`, e.g., `brew install gh` on MacOS.
-- Run `gh auth login` with SSH
-
-
-### Installation with `pipx`
-
-To install via [pipx](https://pipx.pypa.io/stable/) run:
+You need Python 3.10 or newer, Git, and the [GitHub CLI](https://cli.github.com/).
+Authenticate an account that can access this private fork and the repositories
+where you want to use it:
 
 ```bash
-pipx install stack-pr
+gh auth login
+gh auth setup-git
 ```
 
-### Manual installation from source
-
-Manually, you can clone the repository and run the following command:
+Use this command for both installation and upgrades, in your chosen Python
+environment:
 
 ```bash
-pipx install .
+python -m pip install --upgrade "git+https://github.com/jansel/stack-pr.git@main"
 ```
 
-## Usage
+For an isolated installation:
 
-`stack-pr` allows you to work with stacked PRs: submit, view, and land them.
-
-### Basic Workflow
-
-The most common workflow is simple:
-
-1. Create a feature branch from `main`:
 ```bash
-git checkout main
-git pull
-git checkout -b my-feature
+python3 -m venv ~/.venvs/stack-pr
+~/.venvs/stack-pr/bin/python -m pip install --upgrade "git+https://github.com/jansel/stack-pr.git@main"
+export PATH="$HOME/.venvs/stack-pr/bin:$PATH"
 ```
 
-2. Make your changes and create multiple commits (one commit per PR you want to create)
+Add the `PATH` line to your shell startup file to keep the command available.
+Once installed, update with:
+
 ```bash
-# Make some changes
+stack-pr upgrade
+```
+
+This runs `python -m pip install --upgrade` using the Python interpreter that
+runs `stack-pr`, targeting this fork's `main` branch. It works from any directory,
+requires Git access to the fork, and reports pip's exit status if installation
+fails. It does not need a working checkout or `gh` at runtime if Git credentials
+are already configured.
+
+For local development, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Basic workflow
+
+Create a feature branch and make one commit per desired PR:
+
+```bash
+git fetch origin
+git switch -c my-feature origin/main
+# Edit files, then create a commit for each logical change.
+git add path/to/file
 git commit -m "First change"
-# Make more changes
-git commit -m "Second change"
-# And so on...
+# Repeat for the next change.
 ```
 
-3. Review what will be in your stack:
+Inspect the stack, then create or update its PRs:
+
 ```bash
-stack-pr view  # Always safe to run, helps catch issues early
+stack-pr view
+stack-pr submit   # `stack-pr` and `stack-pr export` also submit
 ```
 
-4. Create/update the stack of PRs:
+The output shows the newest commit first, with visible URLs:
+
+```text
+Stack:
+   * cc932b71 (#439, 'jansel/stack/103' -> 'jansel/stack/102'): Improve navigation
+         https://github.com/jansel/example/pull/439
+   * 3475c898 (#438, 'jansel/stack/102' -> 'main'): Fix the coffee dispenser
+         https://github.com/jansel/example/pull/438
+```
+
+Amend or reorder commits locally, then run `stack-pr submit` again. Existing PR
+bodies are preserved; use `stack-pr submit --update-body` when you want to replace
+them with the current commit messages.
+
+To rebase onto the latest target branch:
+
 ```bash
+git fetch origin
+git rebase origin/main
 stack-pr submit
 ```
-> **Note**: `export` is an alias for `submit`.
 
-5. To update any PR in the stack:
-- Amend the corresponding commit
-- Run `stack-pr view` to verify your changes
-- Run `stack-pr submit` again
+Once reviewed and the bottom PR is mergeable, land one PR or the entire stack:
 
-6. To rebase your stack on the latest main:
-```bash
-git checkout my-feature
-git pull origin main  # Get the latest main
-git rebase main       # Rebase your commits on top of main
-stack-pr submit       # Resubmit to update all PRs
-```
-
-7. When your PRs are ready to merge, you have two options:
-
-**Option A**: Using `stack-pr land`:
 ```bash
 stack-pr land
-```
-This will:
-- Merge the bottom-most PR in your stack
-- Automatically rebase your remaining PRs
-- You can run `stack-pr land` again to merge the next PR once CI passes
-
-**Option B**: Using GitHub web interface:
-1. Merge the bottom-most PR through GitHub UI
-2. After the merge, on your local machine:
-   ```bash
-   git checkout my-feature
-   git pull origin main  # Get the merged changes
-   stack-pr submit       # Resubmit the stack to rebase remaining PRs
-   ```
-3. Repeat for each PR in the stack
-
-That's it!
-
-> **Pro-tip**: Run `stack-pr view` frequently - it's a safe command that helps you understand the current state of your stack and catch any potential issues early.
-
-### Commands
-
-`stack-pr` has five main commands:
-
-- `submit` (or `export`) - create a new stack of PRs from the given set of
-  commits. One can think of this as "push my local changes to the corresponding
-  remote branches and update the corresponding PRs (or create new PRs if they
-  don't exist yet)".
-- `view` - inspect the given set of commits and find the linked PRs. This
-  command does not push any changes anywhere and does not change any commits.
-  It can be used to examine what other commands did or will do.
-- `abandon` - remove all stack metadata from the given set of commits. Apart
-  from removing the metadata from the affected commits, this command deletes
-  the corresponding local and remote branches and closes the PRs.
-- `land` - merge the bottom-most PR in the current stack and rebase the rest of
-  the stack on the latest main.
-- `land-all` - merge every PR in the current stack from bottom to top in a
-  single command, waiting for required CI between PRs and retrying on
-  transient failures. Each PR in the stack is rebased exactly once (just
-  before its turn to land), so the work is linear in the size of the stack.
-- `config` - set configuration values in the config file. Similar to `git config`,
-  it takes a setting in the format `<section>.<key>=<value>` and updates the
-  config file (`.stack-pr.cfg` by default).
-
-A usual workflow is the following:
-
-```bash
-while not ready to merge:
-    make local changes
-    commit to local git repo or amend existing commits
-    create or update the stack with `stack-pr.py submit`
-merge changes with `stack-pr.py land`
+# Or:
+stack-pr land-all
 ```
 
-You can also use `view` at any point to examine the current state, and
-`abandon` to drop the stack.
-
-Under the hood the tool creates and maintains branches named
-`$USERNAME/stack/$BRANCH_NUM` (the name pattern can be customized via
-`--branch-name-template` option) and embeds stack metadata into commit messages,
-but you are not supposed to work with those branches or edit that metadata
-manually. I.e. instead of pushing to these branches you should use `submit`,
-instead of deleting them you should use `abandon` and instead of merging them
-you should use `land`.
-
-The tool looks at commits in the range `BASE..HEAD` and creates a stack of PRs
-to apply these commits to `TARGET`. By default, `BASE` is `main` (local
-branch), `HEAD` is the git revision `HEAD`, and `TARGET` is `main` on remote
-(i.e. `origin/main`). These parameters can be changed with options `-B`, `-H`,
-and `-T` respectively and accept the standard git notation: e.g. one can use
-`-B HEAD~2`, to create a stack from the last two commits.
-
-### Example
-
-The first step before creating a stack of PRs is to double-check the changes
-we’re going to post.
-
-By default `stack-pr` will look at commits in `main..HEAD` range and will create
-a PR for every commit in that range.
-
-For instance, if we have
-
-```bash
-# git checkout my-feature
-# git log -n 4  --format=oneline
-**cc932b71c** (**my-feature**)        Optimized navigation algorithms for deep space travel
-**3475c898f**                         Fixed zero-gravity coffee spill bug in beverage dispenser
-**99c4cd9a7**                         Added warp drive functionality to spaceship engine.
-**d2b7bcf87** (**origin/main, main**) Added module for deploying remote space probes
-
-```
-
-Then the tool will consider the top three commits as changes, for which we’re
-trying to create a stack.
-
-> **Pro-tip**: a convenient way to see what commits will be considered by
-> default is the following command:
->
-
-```bash
-alias githist='git log --abbrev-commit --oneline $(git merge-base origin/main HEAD)^..HEAD'
-```
-
-We can double-check that by running the script with `view` command - it is
-always a safe command to run:
-
-```bash
-# stack-pr view
-...
-VIEW
-**Stack:**
-   * **cc932b71** (No PR): Optimized navigation algorithms for deep space travel
-   * **3475c898** (No PR): Fixed zero-gravity coffee spill bug in beverage dispenser
-   * **99c4cd9a** (No PR): Added warp drive functionality to spaceship engine.
-SUCCESS!
-```
-
-If everything looks correct, we can now submit the stack, i.e. create all the
-corresponding PRs and cross-link them. To do that, we run the tool with
-`submit` command:
-
-```bash
-# stack-pr submit
-...
-SUCCESS!
-```
-
-The command accepts a couple of options that might be useful, namely:
-
-- `--draft` - mark all created PRs as draft. This helps to avoid over-burdening
-  CI.
-- `--draft-bitmask` - mark select PRs in a stack as draft using a bitmask where
-    `1` indicates draft, and `0` indicates non-draft.
-    For example `--draft-bitmask 0010` to make the third PR a draft in a stack
-    of four.
-    The length of the bitmask must match the number of stacked PRs.
-    Overridden by `--draft` when passed.
-- `--reviewer="handle1,handle2"` - assign specified reviewers.
-
-If the command succeeded, we should see “SUCCESS!” in the end, and we can now
-run `view` again to look at the new stack:
-
-```python
-# stack-pr view
-...
-VIEW
-**Stack:**
-   * **cc932b71** (#439, 'ZolotukhinM/stack/103' -> 'ZolotukhinM/stack/102'): Optimized navigation algorithms for deep space travel
-   * **3475c898** (#438, 'ZolotukhinM/stack/102' -> 'ZolotukhinM/stack/101'): Fixed zero-gravity coffee spill bug in beverage dispenser
-   * **99c4cd9a** (#437, 'ZolotukhinM/stack/101' -> 'main'): Added warp drive functionality to spaceship engine.
-SUCCESS!
-```
-
-We can also go to github and check our PRs there:
-
-![StackedPRExample2](https://modular-assets.s3.amazonaws.com/images/stackpr/example_1.png)
-
-If we need to make changes to any of the PRs (e.g. to address the review
-feedback), we simply amend the desired changes to the appropriate git commits
-and run `submit` again. If needed, we can rearrange commits or add new ones.
-
-`submit` simply syncs the local changes with the corresponding PRs. This is why
-we use the same `stack-pr submit` command when we create a new stack, rebase our
-changes on the latest main, update any PR in the stack, add new commits to the
-stack, or rearrange commits in the stack.
-
-When we are ready to merge our changes, we use `land` command.
-
-```python
-# stack-pr land
-LAND
-Stack:
-   * cc932b71 (#439, 'ZolotukhinM/stack/103' -> 'ZolotukhinM/stack/102'): Optimized navigation algorithms for deep space travel
-   * 3475c898 (#438, 'ZolotukhinM/stack/102' -> 'ZolotukhinM/stack/101'): Fixed zero-gravity coffee spill bug in beverage dispenser
-   * 99c4cd9a (#437, 'ZolotukhinM/stack/101' -> 'main'): Added warp drive functionality to spaceship engine.
-Landing 99c4cd9a (#437, 'ZolotukhinM/stack/101' -> 'main'): Added warp drive functionality to spaceship engine.
-...
-Rebasing 3475c898 (#438, 'ZolotukhinM/stack/102' -> 'ZolotukhinM/stack/101'): Fixed zero-gravity coffee spill bug in beverage dispenser
-...
-Rebasing cc932b71 (#439, 'ZolotukhinM/stack/103' -> 'ZolotukhinM/stack/102'): Optimized navigation algorithms for deep space travel
-...
-SUCCESS!
-```
-
-This command lands the first PR of the stack and rebases the rest. If we run
-`view` command after `land` we will find the remaining, not yet-landed PRs
-there:
-
-```python
-# stack-pr view
-VIEW
-**Stack:**
-   * **8177f347** (#439, 'ZolotukhinM/stack/103' -> 'ZolotukhinM/stack/102'): Optimized navigation algorithms for deep space travel
-   * **35c429c8** (#438, 'ZolotukhinM/stack/102' -> 'main'): Fixed zero-gravity coffee spill bug in beverage dispenser
-```
-
-This way we can land all the PRs from the stack one by one.
-
-### Specifying custom commit ranges
-
-The example above used the default commit range - `main..HEAD`, but you can
-specify a custom range too. Below are several commonly useful invocations of
-the script:
-
-```bash
-# Submit a stack of last 5 commits
-stack-pr submit -B HEAD~5
-
-# Use 'origin/main' instead of 'main' as the base for the stack
-stack-pr submit -B origin/main
-
-# Do not include last two commits to the stack
-stack-pr submit -H HEAD~2
-```
-
-These options work for all script commands (and it’s recommended to first use
-them with `view` to double check the result). It is possible to mix and match
-them too - e.g. one can first submit the stack for the last 5 commits and then
-land first three of them:
-
-```bash
-# Inspect what commits will be included HEAD~5..HEAD
-stack-pr view -B HEAD~5
-# Create a stack from last five commits
-stack-pr submit -B HEAD~5
-
-# Inspect what commits will be included into the range HEAD~5..HEAD~2
-stack-pr view -B HEAD~5 -H HEAD~2
-# Land first three PRs from the stack
-stack-pr land -B HEAD~5 -H HEAD~2
-```
-
-Note that generally one doesn't need to specify the base and head branches
-explicitly - `stack-pr` will figure out the correct range based on the current
-branch and the remote `main` by default.
-
-## Command Line Options Reference
-
-### Common Arguments
-
-These arguments can be used with any subcommand:
-
-- `-R, --remote`: Remote name (default: "origin")
-- `-B, --base`: Local base branch
-- `-H, --head`: Local head branch (default: "HEAD")
-- `-T, --target`: Remote target branch (default: "main")
-- `--hyperlinks/--no-hyperlinks`: Enable/disable hyperlink support (default: enabled)
-- `-V, --verbose`: Enable verbose output from Git subcommands (default: false)
-- `--branch-name-template`: Template for generated branch names (default: "$USERNAME/stack"). The following variables are supported:
-   - `$USERNAME`: The username of the current user
-   - `$BRANCH`: The current branch name
-   - `$ID`: The location for the ID of the branch. The ID is determined by the order of creation of the branches. If `$ID` is not found in the template, the template will be appended with `/$ID`.
-
-### Subcommands
-
-#### submit (alias: export)
-
-Submit a stack of PRs.
-
-Options:
-
-- `--keep-body`: Keep current PR body, only update cross-links (default: false)
-- `-d, --draft`: Submit PRs in draft mode (default: false)
-- `--draft-bitmask`: Bitmask for setting draft status per PR
-- `--reviewer`: List of reviewers for the PRs (default: from $STACK_PR_DEFAULT_REVIEWER or config)
-- `-s, --stash`: Stash all uncommitted changes before submitting the PR
-
-#### land
-
-Land the bottom-most PR in the current stack.
-
-If the `land.style` config option has the `disable` value, this command is not available.
-
-#### land-all
-
-Land every PR in the current stack from bottom to top.
-
-After landing a PR (other than the first), the next PR in the stack is rebased
-onto the target branch and the command waits for required CI to finish before
-attempting to land it. If the merge fails (e.g. because required CI hasn't
-finished yet), the command waits and retries.
-
-Each PR is rebased exactly once just before its turn to land, so the total
-amount of branch updates is linear in the size of the stack — significantly
-less than running `land` repeatedly, which would rebase every PR after every
-land.
-
-Options:
-
-- `--wait`: Seconds to wait between PRs to allow required CI to finish, and
-  between retries when landing fails (default: 30).
-- `--retries`: Number of times to retry landing if the merge fails. Total
-  attempts per PR is `retries + 1` (default: 10).
-
-#### abandon
-
-Abandon the current stack.
-
-Takes no additional arguments beyond common ones.
-
-#### view
-
-Inspect the current stack
-
-Takes no additional arguments beyond common ones.
-
-#### config
-
-Set a configuration value in the config file.
-
-Arguments:
-
-- `setting` (required): Configuration setting in format `<section>.<key>=<value>`
+`land` merges the bottom PR and rebases the remaining stack. `land-all` lands
+bottom to top, rebasing each later PR just before merging it. After a rebase,
+it sleeps to allow CI to run; failed merge commands are retried. GitHub's merge
+requirements still apply.
+
+You can also merge the bottom PR through GitHub, then fetch and rebase your
+local branch before resubmitting the remaining stack.
+
+## Commands
+
+| Command | Behavior |
+| --- | --- |
+| `submit` / `export` | Create or update one PR per commit; the default with no arguments. |
+| `view` | Inspect commits and linked PRs without pushing or rewriting commits. |
+| `land` | Merge the bottom PR and rebase the rest. |
+| `land-all` | Merge the entire stack with waits and retries. |
+| `abandon` | Remove stack metadata and delete the associated stack branches. |
+| `config section.key=value` | Write a configuration setting. |
+| `upgrade` | Install the latest version of this fork from GitHub. |
+
+### Commit ranges and common options
+
+Stack commands operate on `BASE..HEAD`, targeting `origin/main` by default.
+When `--base` is omitted, the base is the merge base of `HEAD` and the remote
+target. Generated branches are named `$USERNAME/stack/$ID`; let `stack-pr`
+manage these branches and the `stack-info` metadata in commit messages.
+
+These options apply to `submit`, `view`, `land`, `land-all`, and `abandon`:
+
+| Option | Meaning / default |
+| --- | --- |
+| `-R`, `--remote` | Git remote; `origin`. |
+| `-B`, `--base` | Base revision; inferred from the remote target. |
+| `-H`, `--head` | Head revision; `HEAD`. |
+| `-T`, `--target` | Remote target branch; `main`. |
+| `--hyperlinks` / `--no-hyperlinks` | Toggle terminal hyperlinks; full URLs always remain visible. |
+| `--show-tips` / `--no-show-tips` | Toggle usage tips after commands. |
+| `-V`, `--verbose` | Show additional progress and subprocess output. |
+| `--branch-name-template` | Branch template; `$USERNAME/stack`. Supports `$USERNAME`, `$BRANCH`, and `$ID`; `/$ID` is appended if absent. |
 
 Examples:
 
 ```bash
-# Set verbose mode
-stack-pr config common.verbose=True
-
-# Disable usage tips (hide verbose output after commands)
-stack-pr config common.show_tips=False
-
-# Set target branch
-stack-pr config repo.target=master
-
-# Set default reviewer(s)
-stack-pr config repo.reviewer=user1,user2
-
-# Set custom branch name template
-stack-pr config repo.branch_name_template=$USERNAME/stack
-
-# Disable the land command (require GitHub web interface for merging)
-stack-pr config land.style=disable
-
-# Use "bottom-only" landing style for stacks
-stack-pr config land.style=bottom-only
+stack-pr view -B HEAD~5
+stack-pr submit -B HEAD~5
+stack-pr submit -H HEAD~2
+stack-pr view --no-hyperlinks --no-show-tips
 ```
 
-The config command modifies the config file (the `.stack-pr.cfg` file in the repo root by default, or the path specified by `STACKPR_CONFIG` environment variable). If the file doesn't exist, it will be created. If a setting already exists, it will be updated.
+### Submission options
 
-### Config files
+- `--update-body`: replace PR bodies from commit messages. By default, keep the
+  current bodies and only refresh cross-links and titles.
+- `-d`, `--draft`: create new PRs as drafts.
+- `--draft-bitmask`: choose draft status for new PRs from oldest to newest, such
+  as `0010` for a four-PR stack. The mask length must match the stack; `--draft`
+  takes precedence.
+- `--reviewer`: comma-separated reviewer handles; defaults to
+  `$STACK_PR_DEFAULT_REVIEWER` or the config file.
+- `-s`, `--stash`: temporarily stash uncommitted changes during submission.
 
-Default values for command line options can be specified via a config file.
-Path to the config file can be specified via `STACKPR_CONFIG` envvar, and by
-default it's assumed to be `.stack-pr.cfg` in the current folder.
+### Landing the entire stack
 
-An example of a config file:
+```bash
+stack-pr land-all --wait 30 --retries 10
+```
 
-```cfg
+`--wait` is the number of seconds to sleep after rebasing a later PR and between
+failed merge attempts. `--retries` allows that many retries after the first
+attempt, so `10` permits up to 11 attempts per PR. The initial stack must pass
+verification before landing starts. Unlike repeatedly calling `land`, which
+rebases the remaining stack after every merge, `land-all` rebases each later PR
+once.
+
+### Configuration
+
+Defaults are read from `.stack-pr.cfg` at the Git repository root, including
+when invoked from a subdirectory. `STACKPR_CONFIG` overrides the path.
+
+```bash
+stack-pr config common.hyperlinks=False
+stack-pr config common.show_tips=False
+stack-pr config repo.target=main
+stack-pr config 'repo.branch_name_template=$USERNAME/$BRANCH'
+stack-pr config land-all.wait=60
+```
+
+Example configuration:
+
+```ini
 [common]
-verbose=True
+verbose=False
 hyperlinks=True
-draft=False
-keep_body=False
-stash=False
 show_tips=True
+draft=False
+stash=False
 [repo]
 remote=origin
 target=main
 reviewer=GithubHandle1,GithubHandle2
 branch_name_template=$USERNAME/$BRANCH
+[land]
+style=bottom-only
 [land-all]
 wait=30
 retries=10
-[land]
-style=bottom-only
 ```
+
+Set `land.style=disable` to disable both landing commands and require merging
+through GitHub. Use `stack-pr <command> --help` for command-specific options.
