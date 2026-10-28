@@ -1,5 +1,17 @@
 # Top of tree
 
+* Added `stack-pr --version`, including the source commit for GitHub installs.
+* Fixed stash restoration with verbose output, preserving unrelated stashes,
+  staged changes, and recoverable stashes after conflicts.
+* Restore PRs temporarily made draft after submission errors or interrupts,
+  and report manual recovery commands if restoring their status fails.
+* `land-all` now polls required CI and confirms merges before advancing,
+  resumes after partially completed runs, and rejects negative wait/retry values.
+* Stop landing immediately on merge conflicts, failed required checks, missing
+  approvals, or permanent merge errors. Abort local rebase conflicts and restore
+  the original branch, including after interrupts.
+* Linked upstream PRs #86 (restricted-fetch bugfix) and #88 (interactive rebases).
+
 * Merged upstream through `57e425c`, retaining the fork's interactive-rebase
   support, default submission, preserved PR bodies, and `land-all` command.
   The upstream `land.style=disable` option now disables both landing commands.

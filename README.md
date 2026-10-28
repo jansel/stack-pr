@@ -19,17 +19,23 @@ plus these workflow changes:
 - **Interactive rebases:** submit and land commands can run while paused during
   `git rebase -i`. The fork temporarily saves and restores the rebase state,
   including in linked worktrees. Upstream rejects submission during a rebase.
-  Resolve conflicts and commit changes before submitting.
+  Resolve conflicts and commit changes before submitting. Proposed upstream in
+  [PR #88: Make submit work with `git rebase -i`](https://github.com/modular/stack-pr/pull/88).
 - **Land the entire stack:** `land-all` merges from bottom to top, rebasing each
-  remaining PR once just before its turn, with configurable waits and retries.
+  remaining PR just before its turn. It watches required CI, confirms each merge,
+  and resumes after interruptions by skipping already merged PRs.
   Upstream's `land.style=disable` setting disables both `land` and `land-all` here.
 - **Visible PR URLs:** each PR's full URL appears on its own line, including when
   terminal hyperlinks are disabled. Multi-PR descriptions label the stack
   “oldest at bottom.”
-- **Restricted fetch configurations:** stack branches are fetched explicitly,
-  including when `git remote set-branches origin main` restricts normal fetches.
+- **Restricted-fetch bugfix:** stack branches are fetched explicitly, including
+  when `git remote set-branches origin main` restricts normal fetches. This fixes
+  branch-number reuse that could overwrite existing stack branches; proposed
+  upstream in [PR #86](https://github.com/modular/stack-pr/pull/86).
 - **Upgrade from GitHub:** `stack-pr upgrade` installs the latest `main` from
   this fork into the current installation's Python environment.
+- **Failure recovery:** submissions restore the exact stash they created and
+  restore PRs temporarily made draft, including after errors or Ctrl-C.
 
 The upstream merge also brings the `config` command, repository-root config
 lookup, optional usage tips, target-branch diagnostics, temporary draft status
@@ -71,6 +77,16 @@ Once installed, update with:
 ```bash
 stack-pr upgrade
 ```
+
+Check the installed version and source commit with:
+
+```bash
+stack-pr --version
+```
+
+The version comes from the installed package's metadata, independent of the
+repository you run it in. GitHub installations also report the exact source
+commit recorded by pip.
 
 This runs `python -m pip install --upgrade` using the Python interpreter that
 runs `stack-pr`, targeting this fork's `main` branch. It works from any directory,
@@ -122,7 +138,7 @@ git rebase origin/main
 stack-pr submit
 ```
 
-Once reviewed and the bottom PR is mergeable, land one PR or the entire stack:
+Once reviewed, land one PR or the entire stack:
 
 ```bash
 stack-pr land
@@ -131,9 +147,10 @@ stack-pr land-all
 ```
 
 `land` merges the bottom PR and rebases the remaining stack. `land-all` lands
-bottom to top, rebasing each later PR just before merging it. After a rebase,
-it sleeps to allow CI to run; failed merge commands are retried. GitHub's merge
-requirements still apply.
+bottom to top, rebasing each later PR just before merging it. It waits for
+required CI and confirms that GitHub has merged each PR before advancing.
+GitHub's merge requirements still apply; missing approvals, failed required
+checks, and merge conflicts stop the command.
 
 You can also merge the bottom PR through GitHub, then fetch and rebase your
 local branch before resubmitting the remaining stack.
@@ -145,10 +162,11 @@ local branch before resubmitting the remaining stack.
 | `submit` / `export` | Create or update one PR per commit; the default with no arguments. |
 | `view` | Inspect commits and linked PRs without pushing or rewriting commits. |
 | `land` | Merge the bottom PR and rebase the rest. |
-| `land-all` | Merge the entire stack with waits and retries. |
+| `land-all` | Watch required CI and merge the stack; rerun to resume. |
 | `abandon` | Remove stack metadata and delete the associated stack branches. |
 | `config section.key=value` | Write a configuration setting. |
 | `upgrade` | Install the latest version of this fork from GitHub. |
+| `--version` | Print the installed version and source commit. |
 
 ### Commit ranges and common options
 
@@ -189,7 +207,9 @@ stack-pr view --no-hyperlinks --no-show-tips
   takes precedence.
 - `--reviewer`: comma-separated reviewer handles; defaults to
   `$STACK_PR_DEFAULT_REVIEWER` or the config file.
-- `-s`, `--stash`: temporarily stash uncommitted changes during submission.
+- `-s`, `--stash`: temporarily stash tracked uncommitted changes during submission.
+  Restores those changes and their staged status without consuming unrelated
+  stashes. If restoration conflicts, the stash is retained for recovery.
 
 ### Landing the entire stack
 
@@ -197,12 +217,27 @@ stack-pr view --no-hyperlinks --no-show-tips
 stack-pr land-all --wait 30 --retries 10
 ```
 
-`--wait` is the number of seconds to sleep after rebasing a later PR and between
-failed merge attempts. `--retries` allows that many retries after the first
-attempt, so `10` permits up to 11 attempts per PR. The initial stack must pass
-verification before landing starts. Unlike repeatedly calling `land`, which
-rebases the remaining stack after every merge, `land-all` rebases each later PR
-once.
+`--wait` is the interval in seconds between checks of CI and merge status.
+`--retries` is the number of rechecks after the initial check, so `10` permits
+up to 11 polling rounds per PR. Both values must be nonnegative, including in
+the config file. Increase `--retries` for longer CI or merge queues.
+
+The command waits for pending required checks and GitHub's mergeability
+calculation. It requests a merge once ready and waits for confirmation, including
+when GitHub queues the PR. Known temporary transport errors can be retried;
+merge conflicts, failed or cancelled required checks, drafts, missing approvals,
+and permission errors stop the command.
+
+If interrupted or stopped, rerun the same `land-all` command. It skips the
+already merged PRs at the bottom of the stack and continues with the remaining
+PRs. Closed but unmerged PRs and PRs merged out of stack order require fixing
+the stack before proceeding.
+
+For local rebase conflicts, `stack-pr` aborts the rebase it started, returns to
+the original branch, and reports the PR URL and conflicting files. Resolve the
+conflicts locally, resubmit the remaining changes, then rerun `land-all`.
+Unlike repeatedly calling `land`, each later PR is rebased only when its turn
+arrives, rather than after every earlier merge.
 
 ### Configuration
 
