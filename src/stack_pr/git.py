@@ -109,6 +109,27 @@ def get_current_branch_name(repo_dir: Path | None = None) -> str:
         raise
 
 
+def get_repo_root(repo_dir: Path | None = None) -> Path:
+    """Returns the root of the git repository.
+
+    Args:
+        repo_dir: path to the repo. Defaults to the current working directory.
+
+    Returns:
+        The root of the given git repository.
+    """
+    try:
+        return Path(
+            get_command_output(
+                ["git", "rev-parse", "--show-toplevel"], cwd=repo_dir
+            ).strip()
+        )
+    except subprocess.CalledProcessError as e:
+        if e.returncode == GIT_NOT_A_REPO_ERROR:
+            raise GitError("Not inside a valid git repository.") from e
+        raise
+
+
 def get_uncommitted_changes(
     repo_dir: Path | None = None,
 ) -> dict[str, list[str]]:
@@ -221,3 +242,16 @@ def get_changed_dirs(
         files changed.
     """
     return {Path(file.parts[0]) for file in get_changed_files(base, repo_dir)}
+
+
+def is_rebase_in_progress(repo_dir: Path | None = None) -> bool:
+    """Check if a rebase operation is currently in progress.
+
+    Args:
+        repo_dir: path to the repo. Defaults to the current working directory.
+
+    Returns:
+        True if a rebase is in progress, False otherwise.
+    """
+    git_dir = Path(".git") if repo_dir is None else repo_dir / ".git"
+    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()

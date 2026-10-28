@@ -116,12 +116,12 @@ That's it!
 
 ### Commands
 
-`stack-pr` has four main commands:
+`stack-pr` has five main commands:
 
 - `submit` (or `export`) - create a new stack of PRs from the given set of
-  commits. One can think of this as “push my local changes to the corresponding
+  commits. One can think of this as "push my local changes to the corresponding
   remote branches and update the corresponding PRs (or create new PRs if they
-  don’t exist yet)”.
+  don't exist yet)".
 - `view` - inspect the given set of commits and find the linked PRs. This
   command does not push any changes anywhere and does not change any commits.
   It can be used to examine what other commands did or will do.
@@ -134,6 +134,9 @@ That's it!
   single command, waiting for required CI between PRs and retrying on
   transient failures. Each PR in the stack is rebased exactly once (just
   before its turn to land), so the work is linear in the size of the stack.
+- `config` - set configuration values in the config file. Similar to `git config`,
+  it takes a setting in the format `<section>.<key>=<value>` and updates the
+  config file (`.stack-pr.cfg` by default).
 
 A usual workflow is the following:
 
@@ -362,7 +365,7 @@ Options:
 
 Land the bottom-most PR in the current stack.
 
-Takes no additional arguments beyond common ones.
+If the `land.style` config option has the `disable` value, this command is not available.
 
 #### land-all
 
@@ -397,6 +400,41 @@ Inspect the current stack
 
 Takes no additional arguments beyond common ones.
 
+#### config
+
+Set a configuration value in the config file.
+
+Arguments:
+
+- `setting` (required): Configuration setting in format `<section>.<key>=<value>`
+
+Examples:
+
+```bash
+# Set verbose mode
+stack-pr config common.verbose=True
+
+# Disable usage tips (hide verbose output after commands)
+stack-pr config common.show_tips=False
+
+# Set target branch
+stack-pr config repo.target=master
+
+# Set default reviewer(s)
+stack-pr config repo.reviewer=user1,user2
+
+# Set custom branch name template
+stack-pr config repo.branch_name_template=$USERNAME/stack
+
+# Disable the land command (require GitHub web interface for merging)
+stack-pr config land.style=disable
+
+# Use "bottom-only" landing style for stacks
+stack-pr config land.style=bottom-only
+```
+
+The config command modifies the config file (the `.stack-pr.cfg` file in the repo root by default, or the path specified by `STACKPR_CONFIG` environment variable). If the file doesn't exist, it will be created. If a setting already exists, it will be updated.
+
 ### Config files
 
 Default values for command line options can be specified via a config file.
@@ -412,6 +450,7 @@ hyperlinks=True
 draft=False
 keep_body=False
 stash=False
+show_tips=True
 [repo]
 remote=origin
 target=main
@@ -420,4 +459,6 @@ branch_name_template=$USERNAME/$BRANCH
 [land-all]
 wait=30
 retries=10
+[land]
+style=bottom-only
 ```

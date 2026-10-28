@@ -58,6 +58,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
 from logging import getLogger
@@ -70,7 +71,9 @@ from stack_pr.git import (
     check_gh_installed,
     get_current_branch_name,
     get_gh_username,
+    get_repo_root,
     get_uncommitted_changes,
+    is_rebase_in_progress,
 )
 from stack_pr.shell_commands import (
     get_command_output,
@@ -78,6 +81,21 @@ from stack_pr.shell_commands import (
 )
 
 logger = getLogger(__name__)
+
+# Global verbose flag
+_verbose = False
+
+
+def set_verbose(verbose: bool) -> None:  # noqa: FBT001
+    """Set the global verbose flag."""
+    global _verbose  # noqa: PLW0603
+    _verbose = verbose
+
+
+def is_verbose() -> bool:
+    """Check if verbose mode is enabled."""
+    return _verbose
+
 
 # A bunch of regexps for parsing commit messages and PR descriptions
 RE_RAW_COMMIT_ID = re.compile(r"^(?P<commit>[a-f0-9]+)$", re.MULTILINE)
@@ -172,6 +190,33 @@ ERROR_REPO_DIRTY = """There are uncommitted changes.
 
 Please commit or stash them before working with stacks.
 """
+ERROR_REBASE_IN_PROGRESS = """Cannot submit while in the middle of a rebase.
+
+Please complete or abort the current rebase first.
+"""
+ERROR_CONFIG_INVALID_FORMAT = """Invalid config format.
+
+Usage: stack-pr config <section>.<key>=<value>
+
+Examples:
+  stack-pr config common.verbose=True
+  stack-pr config repo.target=main
+  stack-pr config repo.reviewer=user1,user2
+"""
+ERROR_TARGET_BRANCH_MASTER_INSTEAD_OF_MAIN = """Could not find target branch '{remote}/{target}'.
+
+It looks like your repository uses '{remote}/master' instead of '{remote}/main'.
+
+You can fix this by specifying the target branch:
+  stack-pr view --target=master
+
+Or set it permanently in your config file:
+  stack-pr config repo.target=master
+"""
+ERROR_TARGET_BRANCH_MISSING = """Could not find target branch '{remote}/{target}'.
+
+Make sure the branch exists or specify a different target with --target option.
+"""
 UPDATE_STACK_TIP = """
 If you'd like to push your local changes first, you can use the following command to update the stack:
   $ stack-pr export -B {top_commit}~{stack_size} -H {top_commit}"""
@@ -252,7 +297,7 @@ class StackEntry:
     _pr: str | None = None
     _base: str | None = None
     _head: str | None = None
-    need_update: bool = False
+    is_tmp_draft: bool = False
 
     @property
     def pr(self) -> str:
@@ -382,12 +427,14 @@ def error(msg: str) -> None:
 
 
 def log(msg: str, *, level: int = 1) -> None:
-    if level <= 1:
+    """Log a message based on verbosity level.
+
+    Args:
+        msg: Message to log
+        level: 1 for essential messages (always shown), 2+ for verbose-only messages
+    """
+    if level == 1 or (level >= 2 and is_verbose()):  # noqa: PLR2004
         print(msg)
-    elif level == 1:
-        logger.info(msg)
-    elif level >= 2:  # noqa: PLR2004
-        logger.debug(msg)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -457,7 +504,7 @@ def set_base_branches(st: list[StackEntry], target: str) -> None:
 
 
 def verify(st: list[StackEntry], *, check_base: bool = False) -> None:
-    log(h("Verifying stack info"))
+    log(h("Verifying stack info"), level=2)
     for index, e in enumerate(st):
         if e.has_missing_info():
             error(ERROR_STACKINFO_MISSING.format(**locals()))
@@ -668,7 +715,7 @@ def set_head_branches(
 def init_local_branches(
     st: list[StackEntry], remote: str, *, verbose: bool, branch_name_template: str
 ) -> None:
-    log(h("Initializing local branches"))
+    log(h("Initializing local branches"), level=2)
     set_head_branches(
         st, remote, verbose=verbose, branch_name_template=branch_name_template
     )
@@ -680,7 +727,7 @@ def init_local_branches(
 
 
 def push_branches(st: list[StackEntry], remote: str, *, verbose: bool) -> None:
-    log(h("Updating remote branches"))
+    log(h("Updating remote branches"), level=2)
     cmd = ["git", "push", "-f", remote]
     cmd.extend([f"{e.head}:{e.head}" for e in st])
     run_shell_command(cmd, quiet=not verbose)
@@ -744,6 +791,10 @@ def create_pr(e: StackEntry, *, is_draft: bool, reviewer: str = "") -> None:
 
 
 def generate_toc(st: list[StackEntry], current: str) -> str:
+    # Don't generate TOC for single PR
+    if len(st) == 1:
+        return ""
+
     def toc_entry(se: StackEntry) -> str:
         pr_id = last(se.pr)
         arrow = "__->__" if pr_id == current else ""
@@ -753,7 +804,7 @@ def generate_toc(st: list[StackEntry], current: str) -> str:
     return f"Stacked PRs (oldest at bottom):\n{''.join(entries)}\n"
 
 
-def get_current_pr_body(e: StackEntry) -> str:
+def get_pr_body(e: StackEntry) -> str:
     out = get_command_output(
         ["gh", "pr", "view", e.pr, "--json", "body"],
     )
@@ -773,23 +824,22 @@ def add_cross_links(st: list[StackEntry], *, keep_body: bool, verbose: bool) -> 
 
         # Strip stack-info from the body, nothing interesting there.
         body = RE_STACK_INFO_LINE.sub("", body)
-        pr_body = [
-            f"{pr_toc}",
-            f"{CROSS_LINKS_DELIMETER}\n",
-        ]
+
+        # Build PR body components
+        header = []
+        body_content = body
+
+        if pr_toc:
+            # Multi-PR stack: add TOC header and format body with title
+            header = [pr_toc, f"{CROSS_LINKS_DELIMETER}\n"]
+            body_content = f"### {title}\n\n{body}"
 
         if keep_body:
             # Keep current body of the PR after the cross links component
-            current_pr_body = get_current_pr_body(e)
-            pr_body.append(current_pr_body.split(CROSS_LINKS_DELIMETER, 1)[-1].lstrip())
-        else:
-            pr_body.extend(
-                [
-                    f"### {title}",
-                    "",
-                    f"{body}",
-                ]
-            )
+            current_pr_body = get_pr_body(e)
+            body_content = current_pr_body.split(CROSS_LINKS_DELIMETER, 1)[-1].lstrip()
+
+        pr_body = [*header, body_content]
 
         if e.has_base():
             run_shell_command(
@@ -800,6 +850,13 @@ def add_cross_links(st: list[StackEntry], *, keep_body: bool, verbose: bool) -> 
         else:
             error("Stack entry has no base branch")
             raise RuntimeError
+
+
+def is_draft_pr(e: StackEntry) -> bool:
+    out = get_command_output(
+        ["gh", "pr", "view", e.pr, "--json", "isDraft"],
+    )
+    return json.loads(out)["isDraft"]
 
 
 # Temporarily set base branches of existing PRs to the bottom of the stack.
@@ -823,14 +880,21 @@ def add_cross_links(st: list[StackEntry], *, keep_body: bool, verbose: bool) -> 
 # stack/2. If we push stack/1, then PR #2 gets automatically closed, since its
 # head branch will contain all the commits from its base branch.
 #
-# To avoid this, we temporarily set all base branches to point to 'main' - once
-# all the branches are pushed we can set the actual base branches.
+# To avoid this, we temporarily set all base branches to point to 'main'. To ensure
+# we don't accidentally notify reviewers in this transient state (where the PRs are
+# pointing to 'main'), we mark the PRs as draft - once all the branches are pushed
+# we can set the actual base branches and undraft the PRs.
 def reset_remote_base_branches(
     st: list[StackEntry], target: str, *, verbose: bool
 ) -> None:
-    log(h("Resetting remote base branches"), level=1)
+    log(h("Resetting remote base branches"), level=2)
 
     for e in filter(lambda e: e.has_pr(), st):
+        # We need to check if the PR is already draft, otherwise we would
+        # unintentionally undo the draft status later.
+        if not is_draft_pr(e):
+            run_shell_command(["gh", "pr", "ready", e.pr, "--undo"], quiet=not verbose)
+            e.is_tmp_draft = True
         run_shell_command(["gh", "pr", "edit", e.pr, "-B", target], quiet=not verbose)
 
 
@@ -873,9 +937,11 @@ class CommonArgs:
     hyperlinks: bool
     verbose: bool
     branch_name_template: str
+    show_tips: bool
+    land_disabled: bool
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> CommonArgs:
+    def from_args(cls, args: argparse.Namespace, *, land_disabled: bool) -> CommonArgs:
         return cls(
             args.base,
             args.head,
@@ -884,7 +950,58 @@ class CommonArgs:
             args.hyperlinks,
             args.verbose,
             args.branch_name_template,
+            args.show_tips,
+            land_disabled,
         )
+
+
+def check_target_branch_exists(args: CommonArgs) -> None:
+    """Check that the target branch exists on the remote.
+
+    Args:
+        args: CommonArgs containing remote and target branch information
+
+    Raises:
+        SystemExit: If the target branch doesn't exist
+    """
+    # Check if target branch exists using git rev-parse --verify
+    # This is fast and doesn't require listing all branches
+    result = run_shell_command(
+        ["git", "rev-parse", "--verify", f"{args.remote}/{args.target}"],
+        quiet=True,
+        check=False,
+    )
+
+    if result.returncode == 0:
+        # Target branch exists, all good
+        return
+
+    # Target branch doesn't exist
+    # Check if this is the common case where repo uses 'master' instead of 'main'
+    if args.target == "main":
+        master_result = run_shell_command(
+            ["git", "rev-parse", "--verify", f"{args.remote}/master"],
+            quiet=True,
+            check=False,
+        )
+        if master_result.returncode == 0:
+            # Master exists, show helpful error
+            error(
+                ERROR_TARGET_BRANCH_MASTER_INSTEAD_OF_MAIN.format(
+                    remote=args.remote,
+                    target=args.target,
+                )
+            )
+            sys.exit(1)
+
+    # Generic error for other cases
+    error(
+        ERROR_TARGET_BRANCH_MISSING.format(
+            remote=args.remote,
+            target=args.target,
+        )
+    )
+    sys.exit(1)
 
 
 def deduce_base(args: CommonArgs) -> CommonArgs:
@@ -915,12 +1032,14 @@ def deduce_base(args: CommonArgs) -> CommonArgs:
         args.hyperlinks,
         args.verbose,
         args.branch_name_template,
+        args.show_tips,
+        args.land_disabled,
     )
 
 
 def print_tips_after_export(st: list[StackEntry], args: CommonArgs) -> None:
     stack_size = len(st)
-    if stack_size == 0:
+    if stack_size == 0 or not args.show_tips:
         return
 
     top_commit = args.head
@@ -928,7 +1047,8 @@ def print_tips_after_export(st: list[StackEntry], args: CommonArgs) -> None:
         top_commit = get_current_branch_name()
 
     log(b("\nOnce the stack is reviewed, it is ready to land!"), level=1)
-    log(LAND_STACK_TIP.format(**locals()))
+    if not args.land_disabled:
+        log(LAND_STACK_TIP.format(**locals()))
 
 
 # ===----------------------------------------------------------------------=== #
@@ -953,6 +1073,11 @@ def command_submit(
             a draft.
     """
     log(h("SUBMIT"), level=1)
+
+    if is_rebase_in_progress():
+        error(ERROR_REBASE_IN_PROGRESS)
+        sys.exit(1)
+
     current_branch = get_current_branch_name()
 
     if should_update_local_base(
@@ -987,7 +1112,6 @@ def command_submit(
         branch_name_template=args.branch_name_template,
     )
     set_base_branches(st, args.target)
-    print_stack(st, links=args.hyperlinks)
 
     # If the current branch contains commits from the stack, we will need to
     # rebase it in the end since the commits will be modified.
@@ -1010,8 +1134,11 @@ def command_submit(
     # Verify consistency in everything we have so far
     verify(st)
 
+    # Print stack now that PRs have been created
+    print_stack(st, links=args.hyperlinks)
+
     # Embed stack-info into commit messages
-    log(h("Updating commit messages with stack metadata"), level=1)
+    log(h("Updating commit messages with stack metadata"), level=2)
     needs_rebase = False
     for e in st:
         try:
@@ -1027,8 +1154,14 @@ def command_submit(
     log(h("Adding cross-links to PRs"), level=1)
     add_cross_links(st, keep_body=keep_body, verbose=args.verbose)
 
+    # Undraft the PRs if they were marked as temporary drafts.
+    for e in st:
+        if e.is_tmp_draft:
+            run_shell_command(["gh", "pr", "ready", e.pr], quiet=not args.verbose)
+            e.is_tmp_draft = False
+
     if need_to_rebase_current:
-        log(h(f"Rebasing the original branch '{current_branch}'"), level=1)
+        log(h(f"Rebasing the original branch '{current_branch}'"), level=2)
         run_shell_command(
             [
                 "git",
@@ -1040,7 +1173,7 @@ def command_submit(
             quiet=not args.verbose,
         )
     else:
-        log(h(f"Checking out the original branch '{current_branch}'"), level=1)
+        log(h(f"Checking out the original branch '{current_branch}'"), level=2)
         run_shell_command(["git", "checkout", current_branch], quiet=not args.verbose)
 
     delete_local_branches(st, verbose=args.verbose)
@@ -1111,7 +1244,7 @@ def land_pr(e: StackEntry, remote: str, target: str, *, verbose: bool) -> None:
 
 
 def delete_local_branches(st: list[StackEntry], *, verbose: bool) -> None:
-    log(h("Deleting local branches"), level=1)
+    log(h("Deleting local branches"), level=2)
     # Delete local branches
     cmd = ["git", "branch", "-D"]
     cmd.extend([e.head for e in st if e.head])
@@ -1451,7 +1584,7 @@ def command_abandon(args: CommonArgs) -> None:
 # ===----------------------------------------------------------------------=== #
 def print_tips_after_view(st: list[StackEntry], args: CommonArgs) -> None:
     stack_size = len(st)
-    if stack_size == 0:
+    if stack_size == 0 or not args.show_tips:
         return
 
     ready_to_land = all(not e.has_missing_info() for e in st)
@@ -1463,7 +1596,8 @@ def print_tips_after_view(st: list[StackEntry], args: CommonArgs) -> None:
     if ready_to_land:
         log(b("\nThis stack is ready to land!"))
         log(UPDATE_STACK_TIP.format(**locals()))
-        log(LAND_STACK_TIP.format(**locals()))
+        if not args.land_disabled:
+            log(LAND_STACK_TIP.format(**locals()))
         return
 
     # Stack is not ready to land, suggest exporting it first
@@ -1517,6 +1651,43 @@ def command_view(args: CommonArgs, short=False) -> None:
 
 
 # ===----------------------------------------------------------------------=== #
+# CONFIG
+# ===----------------------------------------------------------------------=== #
+def command_config(config_file: str, setting: str) -> None:
+    """Set a configuration value in the config file.
+
+    Args:
+        config_file: Path to the config file
+        setting: Setting in the format "section.key=value"
+    """
+    if "=" not in setting:
+        error(ERROR_CONFIG_INVALID_FORMAT)
+        sys.exit(1)
+
+    key_path, value = setting.split("=", 1)
+
+    if "." not in key_path:
+        error(ERROR_CONFIG_INVALID_FORMAT)
+        sys.exit(1)
+
+    section, key = key_path.split(".", 1)
+
+    config = configparser.ConfigParser()
+    if Path(config_file).is_file():
+        config.read(config_file)
+
+    if not config.has_section(section):
+        config.add_section(section)
+
+    config.set(section, key, value)
+
+    with Path(config_file).open("w") as f:
+        config.write(f)
+
+    print(f"Set {section}.{key} = {value}")
+
+
+# ===----------------------------------------------------------------------=== #
 # Main entry point
 # ===----------------------------------------------------------------------=== #
 
@@ -1561,6 +1732,12 @@ def create_argparser(
         default=config.get("repo", "branch_name_template", fallback="$USERNAME/stack"),
         help="A template for names of the branches stack-pr would use.",
     )
+    common_parser.add_argument(
+        "--show-tips",
+        action=argparse.BooleanOptionalAction,
+        default=config.getboolean("common", "show_tips", fallback=True),
+        help="Show or hide usage tips after commands.",
+    )
 
     parser_submit = subparsers.add_parser(
         "submit",
@@ -1602,35 +1779,37 @@ def create_argparser(
         help="Stash all uncommited changes before submitting the PR",
     )
 
-    subparsers.add_parser(
-        "land",
-        help="Land the bottom-most PR of the current stack",
-        parents=[common_parser],
-    )
-    parser_land_all = subparsers.add_parser(
-        "land-all",
-        help="Land the entire stack in a loop",
-        parents=[common_parser],
-    )
-    parser_land_all.add_argument(
-        "--wait",
-        type=int,
-        default=config.getint("land-all", "wait", fallback=30),
-        help=(
-            "Seconds to wait between PRs to allow required CI to finish, and "
-            "between retries when landing fails (default: 30)."
-        ),
-    )
-    parser_land_all.add_argument(
-        "--retries",
-        type=int,
-        default=config.getint("land-all", "retries", fallback=10),
-        help=(
-            "Number of times to retry landing if the merge fails (e.g. because "
-            "required CI hasn't finished yet). Total attempts per PR is "
-            "retries + 1 (default: 10)."
-        ),
-    )
+    land_style = config.get("land", "style", fallback="bottom-only")
+    if land_style == "bottom-only":
+        subparsers.add_parser(
+            "land",
+            help="Land the bottom-most PR of the current stack",
+            parents=[common_parser],
+        )
+        parser_land_all = subparsers.add_parser(
+            "land-all",
+            help="Land the entire stack in a loop",
+            parents=[common_parser],
+        )
+        parser_land_all.add_argument(
+            "--wait",
+            type=int,
+            default=config.getint("land-all", "wait", fallback=30),
+            help=(
+                "Seconds to wait between PRs to allow required CI to finish, and "
+                "between retries when landing fails (default: 30)."
+            ),
+        )
+        parser_land_all.add_argument(
+            "--retries",
+            type=int,
+            default=config.getint("land-all", "retries", fallback=10),
+            help=(
+                "Number of times to retry landing if the merge fails (e.g. because "
+                "required CI hasn't finished yet). Total attempts per PR is "
+                "retries + 1 (default: 10)."
+            ),
+        )
     subparsers.add_parser(
         "abandon",
         help="Abandon the current stack",
@@ -1642,10 +1821,19 @@ def create_argparser(
         parents=[common_parser],
     )
 
+    parser_config = subparsers.add_parser(
+        "config",
+        help="Set a configuration value",
+    )
+    parser_config.add_argument(
+        "setting",
+        help="Configuration setting in format <section>.<key>=<value>",
+    )
+
     return parser
 
 
-def load_config(config_file: str) -> configparser.ConfigParser:
+def load_config(config_file: str | Path) -> configparser.ConfigParser:
     config = configparser.ConfigParser()
     if Path(config_file).is_file():
         config.read(config_file)
@@ -1653,11 +1841,16 @@ def load_config(config_file: str) -> configparser.ConfigParser:
 
 
 def main() -> None:  # noqa: PLR0912
-    config_file = os.getenv("STACKPR_CONFIG", ".stack-pr.cfg")
+    repo_config_file = get_repo_root() / ".stack-pr.cfg"
+    config_file = os.getenv("STACKPR_CONFIG", repo_config_file)
     config = load_config(config_file)
 
     parser = create_argparser(config)
     args = parser.parse_args(sys.argv[1:] or ["submit"])
+
+    # Set global verbose flag (if present - config command doesn't have it)
+    if hasattr(args, "verbose"):
+        set_verbose(args.verbose)
 
     if not args.command:
         args.command = "submit"
@@ -1665,9 +1858,19 @@ def main() -> None:  # noqa: PLR0912
         parser.print_help()
         return
 
+    # Handle config command early since it doesn't need git repo setup
+    if args.command == "config":
+        command_config(config_file, args.setting)
+        return
+
     # Make sure "$ID" is present in the branch name template and append it if not
     args.branch_name_template = fix_branch_name_template(args.branch_name_template)
-    common_args = CommonArgs.from_args(args)
+    common_args = CommonArgs.from_args(
+        args,
+        land_disabled=(
+            config.get("land", "style", fallback="bottom-only") == "disable"
+        ),
+    )
 
     if common_args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -1676,13 +1879,21 @@ def main() -> None:  # noqa: PLR0912
 
     current_branch = get_current_branch_name()
     get_branch_name_base(common_args.branch_name_template)
+    stashed_changes = False
     try:
         if args.command in ["submit", "export"] and args.stash:
-            run_shell_command(["git", "stash", "save"], quiet=not common_args.verbose)
+            result = run_shell_command(
+                ["git", "stash", "save"], quiet=not common_args.verbose
+            )
+            # Check if stash actually saved anything
+            # git stash outputs "No local changes to save" when there's nothing to stash
+            output = result.stdout.decode() if result.stdout else ""
+            stashed_changes = "No local changes to save" not in output
 
         if args.command != "view" and not is_repo_clean():
             error(ERROR_REPO_DIRTY)
             return
+        check_target_branch_exists(common_args)
         common_args = deduce_base(common_args)
 
         if args.command in ["submit", "export"]:
@@ -1720,7 +1931,7 @@ def main() -> None:  # noqa: PLR0912
             print_cmd_failure_details(exc)
         raise
     finally:
-        if args.command in ["submit", "export"] and args.stash:
+        if args.command in ["submit", "export"] and args.stash and stashed_changes:
             run_shell_command(["git", "stash", "pop"], quiet=not common_args.verbose)
 
 
