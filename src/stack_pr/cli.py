@@ -875,6 +875,30 @@ def is_draft_pr(e: StackEntry) -> bool:
     return bool(json.loads(out)["isDraft"])
 
 
+@contextlib.contextmanager
+def temporary_draft_status(st: list[StackEntry], *, verbose: bool) -> Iterator[None]:
+    """Restore PRs made draft by this submission, including after an interruption."""
+    try:
+        yield
+    finally:
+        already_failing = sys.exc_info()[0] is not None
+        failed = []
+        for e in st:
+            if not e.is_tmp_draft:
+                continue
+            try:
+                run_shell_command(["gh", "pr", "ready", e.pr], quiet=not verbose)
+            except (SubprocessError, OSError):
+                failed.append(e.pr)
+                error(f"Could not restore ready status. Run: gh pr ready {e.pr}")
+            else:
+                e.is_tmp_draft = False
+        if failed and not already_failing:
+            raise RuntimeError(
+                "Could not restore ready status for: " + ", ".join(failed)
+            )
+
+
 # Temporarily set base branches of existing PRs to the bottom of the stack.
 # This needs to be done to avoid PRs getting closed when commits are
 # rearranged.
@@ -909,8 +933,10 @@ def reset_remote_base_branches(
         # We need to check if the PR is already draft, otherwise we would
         # unintentionally undo the draft status later.
         if not is_draft_pr(e):
-            run_shell_command(["gh", "pr", "ready", e.pr, "--undo"], quiet=not verbose)
+            # Record intent first: GitHub may accept the request even if its
+            # response is lost, so cleanup must try to restore this PR too.
             e.is_tmp_draft = True
+            run_shell_command(["gh", "pr", "ready", e.pr, "--undo"], quiet=not verbose)
         run_shell_command(["gh", "pr", "edit", e.pr, "-B", target], quiet=not verbose)
 
 
@@ -1136,45 +1162,42 @@ def command_submit(
         top_branch, current_branch, verbose=args.verbose
     )
 
-    reset_remote_base_branches(st, target=args.target, verbose=args.verbose)
+    with temporary_draft_status(st, verbose=args.verbose):
+        reset_remote_base_branches(st, target=args.target, verbose=args.verbose)
 
-    # Push local branches to remote
-    push_branches(st, remote=args.remote, verbose=args.verbose)
+        # Push local branches to remote
+        push_branches(st, remote=args.remote, verbose=args.verbose)
 
-    # Now we have all the branches, so we can create the corresponding PRs
-    log(h("Submitting PRs"), level=1)
-    for e_idx, e in enumerate(st):
-        is_pr_draft = draft or ((draft_bitmask is not None) and draft_bitmask[e_idx])
-        create_pr(e, is_draft=is_pr_draft, reviewer=reviewer)
-
-    # Verify consistency in everything we have so far
-    verify(st)
-
-    # Print stack now that PRs have been created
-    print_stack(st, links=args.hyperlinks)
-
-    # Embed stack-info into commit messages
-    log(h("Updating commit messages with stack metadata"), level=2)
-    needs_rebase = False
-    for e in st:
-        try:
-            needs_rebase = add_or_update_metadata(
-                e, needs_rebase=needs_rebase, verbose=args.verbose
+        # Now we have all the branches, so we can create the corresponding PRs
+        log(h("Submitting PRs"), level=1)
+        for e_idx, e in enumerate(st):
+            is_pr_draft = draft or (
+                (draft_bitmask is not None) and draft_bitmask[e_idx]
             )
-        except Exception:
-            error(ERROR_CANT_UPDATE_META.format(**locals()))
-            raise
+            create_pr(e, is_draft=is_pr_draft, reviewer=reviewer)
 
-    push_branches(st, remote=args.remote, verbose=args.verbose)
+        # Verify consistency in everything we have so far
+        verify(st)
 
-    log(h("Adding cross-links to PRs"), level=1)
-    add_cross_links(st, keep_body=keep_body, verbose=args.verbose)
+        # Print stack now that PRs have been created
+        print_stack(st, links=args.hyperlinks)
 
-    # Undraft the PRs if they were marked as temporary drafts.
-    for e in st:
-        if e.is_tmp_draft:
-            run_shell_command(["gh", "pr", "ready", e.pr], quiet=not args.verbose)
-            e.is_tmp_draft = False
+        # Embed stack-info into commit messages
+        log(h("Updating commit messages with stack metadata"), level=2)
+        needs_rebase = False
+        for e in st:
+            try:
+                needs_rebase = add_or_update_metadata(
+                    e, needs_rebase=needs_rebase, verbose=args.verbose
+                )
+            except Exception:
+                error(ERROR_CANT_UPDATE_META.format(**locals()))
+                raise
+
+        push_branches(st, remote=args.remote, verbose=args.verbose)
+
+        log(h("Adding cross-links to PRs"), level=1)
+        add_cross_links(st, keep_body=keep_body, verbose=args.verbose)
 
     if need_to_rebase_current:
         log(h(f"Rebasing the original branch '{current_branch}'"), level=2)
