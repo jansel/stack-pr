@@ -361,8 +361,9 @@ class StackEntry:
             s += ")"
         s += ": " + self.commit.title()
 
-        if links and self.has_pr():
-            s = link(self.pr, s)
+        if self.has_pr():
+            url = link(self.pr, self.pr) if links else self.pr
+            s += "\n    " + url
 
         return s
 
@@ -566,7 +567,8 @@ def verify(st: list[StackEntry], *, check_base: bool = False) -> None:
 def print_stack(st: list[StackEntry], *, links: bool, level: int = 1) -> None:
     log(b("Stack:"), level=level)
     for e in reversed(st):
-        log("   * " + e.pprint(links=links), level=level)
+        entry = e.pprint(links=links).replace("\n", "\n     ")
+        log("   * " + entry, level=level)
 
 
 def draft_bitmask_type(value: str) -> list[bool]:
@@ -1741,7 +1743,7 @@ def create_argparser(
         "--hyperlinks",
         action=argparse.BooleanOptionalAction,
         default=config.getboolean("common", "hyperlinks", fallback=True),
-        help="Enable or disable hyperlink support.",
+        help="Enable or disable terminal hyperlinks. Full PR URLs are always shown.",
     )
     common_parser.add_argument(
         "-V",
