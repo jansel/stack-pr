@@ -75,6 +75,8 @@ from stack_pr.git import (
     get_repo_root,
     get_uncommitted_changes,
     is_rebase_in_progress,
+    restore_stash,
+    stash_changes,
 )
 from stack_pr.shell_commands import (
     get_command_output,
@@ -1926,16 +1928,10 @@ def main() -> None:  # noqa: PLR0912, PLR0915
 
     current_branch = get_current_branch_name()
     get_branch_name_base(common_args.branch_name_template)
-    stashed_changes = False
+    saved_stash = None
     try:
         if args.command in ["submit", "export"] and args.stash:
-            result = run_shell_command(
-                ["git", "stash", "save"], quiet=not common_args.verbose
-            )
-            # Check if stash actually saved anything
-            # git stash outputs "No local changes to save" when there's nothing to stash
-            output = result.stdout.decode() if result.stdout else ""
-            stashed_changes = "No local changes to save" not in output
+            saved_stash = stash_changes(verbose=common_args.verbose)
 
         if args.command != "view" and not is_repo_clean():
             error(ERROR_REPO_DIRTY)
@@ -1976,8 +1972,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             print_cmd_failure_details(exc)
         raise
     finally:
-        if args.command in ["submit", "export"] and args.stash and stashed_changes:
-            run_shell_command(["git", "stash", "pop"], quiet=not common_args.verbose)
+        if saved_stash is not None:
+            restore_stash(saved_stash, verbose=common_args.verbose)
 
 
 if __name__ == "__main__":

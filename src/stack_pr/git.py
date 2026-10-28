@@ -257,3 +257,35 @@ def is_rebase_in_progress(repo_dir: Path | None = None) -> bool:
         get_command_output(["git", "rev-parse", "--absolute-git-dir"], cwd=repo_dir)
     )
     return any((git_dir / state).is_dir() for state in ("rebase-merge", "rebase-apply"))
+
+
+def stash_changes(*, verbose: bool) -> str | None:
+    """Save tracked changes and return the exact stash created, if any."""
+    if not any(key != "??" for key in get_uncommitted_changes()):
+        return None
+    previous = get_command_output(["git", "stash", "list", "-1", "--format=%H"])
+    run_shell_command(
+        ["git", "stash", "push", "-m", "stack-pr: uncommitted changes"],
+        quiet=not verbose,
+    )
+    current = get_command_output(["git", "stash", "list", "-1", "--format=%H"])
+    return current if current and current != previous else None
+
+
+def restore_stash(stash: str, *, verbose: bool) -> None:
+    """Restore our stash, preserving it if application fails."""
+    try:
+        run_shell_command(
+            ["git", "stash", "apply", "--index", stash], quiet=not verbose
+        )
+    except subprocess.CalledProcessError as exc:
+        raise GitError(
+            f"Could not restore saved changes. Stash {stash} is preserved. "
+            f"Resolve the conflicts or recover it with: git stash apply --index {stash}"
+        ) from exc
+    entries = get_command_output(["git", "stash", "list", "--format=%gd:%H"])
+    for entry in entries.splitlines():
+        ref, commit = entry.split(":", 1)
+        if commit == stash:
+            run_shell_command(["git", "stash", "drop", ref], quiet=not verbose)
+            break
