@@ -1,5 +1,8 @@
 # Top of tree
 
+* Run `git` and `gh` without the Python environment's `LD_LIBRARY_PATH`, so a
+  conda or virtualenv library directory cannot break the SSH `ProxyCommand`
+  behind `git push`.
 * Added `stack-pr --version`, including the source commit for GitHub installs.
 * Fixed stash restoration with verbose output, preserving unrelated stashes,
   staged changes, and recoverable stashes after conflicts.

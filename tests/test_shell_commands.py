@@ -101,3 +101,35 @@ def test_quiet_with_capture_output() -> None:
         [sys.executable, "-c", "print('hello')"], quiet=True, capture_output=True
     )
     assert result.stdout == b"hello\n"
+
+
+def test_ld_library_path_is_not_inherited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """External tools run without the Python environment's LD_LIBRARY_PATH.
+
+    A conda or virtualenv library directory on it shadows the libraries that
+    git's SSH ProxyCommand links, which fails the push.
+    """
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/some/python/env/lib")
+    monkeypatch.setenv("STACK_PR_TEST_MARKER", "kept")
+    result = run_shell_command(
+        [sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH'))"],
+        quiet=True,
+    )
+    assert result.stdout.decode("utf-8").strip() == "None"
+    # Other variables still reach the command.
+    result = run_shell_command(
+        [sys.executable, "-c", "import os; print(os.environ['STACK_PR_TEST_MARKER'])"],
+        quiet=True,
+    )
+    assert result.stdout.decode("utf-8").strip() == "kept"
+
+
+def test_explicit_env_is_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller's env argument is used as given, LD_LIBRARY_PATH included."""
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/some/python/env/lib")
+    result = run_shell_command(
+        [sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH'))"],
+        quiet=True,
+        env={"LD_LIBRARY_PATH": "/explicit/lib", "PATH": "/usr/bin:/bin"},
+    )
+    assert result.stdout.decode("utf-8").strip() == "/explicit/lib"
