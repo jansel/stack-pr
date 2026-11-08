@@ -36,6 +36,11 @@ plus these workflow changes:
   this fork into the current installation's Python environment.
 - **Failure recovery:** submissions restore the exact stash they created and
   restore PRs temporarily made draft, including after errors or Ctrl-C.
+- **Duplicate-PR guard:** `submit` refuses, before pushing anything, to open a PR
+  for a commit without `stack-info` when you already have an open PR with the
+  same title. That commit most likely lost its metadata in a history rewrite;
+  the error prints the `stack-info` line to restore. `--allow-duplicates`
+  overrides it.
 
 The upstream merge also brings the `config` command, repository-root config
 lookup, optional usage tips, target-branch diagnostics, temporary draft status
@@ -207,6 +212,9 @@ stack-pr view --no-hyperlinks --no-show-tips
   takes precedence.
 - `--reviewer`: comma-separated reviewer handles; defaults to
   `$STACK_PR_DEFAULT_REVIEWER` or the config file.
+- `--allow-duplicates`: create PRs for commits without `stack-info` even when one
+  of your open PRs has the same title (normally a sign of lost metadata, so
+  `submit` refuses and prints the `stack-info` line to restore).
 - `-s`, `--stash`: temporarily stash tracked uncommitted changes during submission.
   Restores those changes and their staged status without consuming unrelated
   stashes. If restoration conflicts, the stash is retained for recovery.

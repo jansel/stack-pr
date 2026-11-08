@@ -129,6 +129,17 @@ CROSS_LINKS_DELIMETER = "--- --- ---"
 ERROR_CANT_UPDATE_META = """Couldn't update stack metadata for
     {e}
 """
+ERROR_DUPLICATE_PRS = """Refusing to submit: these commits have no stack-info line, but you
+already have open PRs with the same titles:
+{duplicates}
+Their stack-info metadata was probably lost when the history was rewritten, and
+submitting would open duplicate PRs. Restore each line above as the last line of
+its commit message (for example by rewording the commit in an interactive
+rebase) and submit again, or pass --allow-duplicates to open new PRs anyway.
+"""
+ERROR_CANT_LIST_PRS = """Could not list your open PRs to check for duplicates ({cmd}).
+Fix the gh error above, or pass --allow-duplicates to skip the check.
+"""
 ERROR_CANT_CREATE_PR = """Could not create a new PR for:
     {e}
 
@@ -790,6 +801,52 @@ def print_cmd_failure_details(exc: SubprocessError) -> None:
     print(f"Stderr: {cmd_stderr}")
 
 
+def find_duplicate_prs(st: list[StackEntry]) -> list[tuple[StackEntry, dict[str, str]]]:
+    """Open PRs of the current user with the title of a stack entry that has no
+    PR yet. Such an entry most likely lost its stack-info line in a rewrite, and
+    creating a PR for it would duplicate the existing one."""
+    new = [e for e in st if not e.has_pr()]
+    if not new:
+        return []
+    cmd = [
+        "gh",
+        "pr",
+        "list",
+        "--author",
+        "@me",
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,url,headRefName",
+    ]
+    try:
+        prs = json.loads(get_command_output(cmd) or "[]")
+    except (CalledProcessError, ValueError):
+        error(ERROR_CANT_LIST_PRS.format(cmd=" ".join(cmd)))
+        raise
+    by_title: dict[str, list[dict[str, str]]] = {}
+    for pr in prs:
+        by_title.setdefault(pr["title"], []).append(pr)
+    return [(e, pr) for e in new for pr in by_title.get(e.commit.title(), [])]
+
+
+def check_no_duplicate_prs(st: list[StackEntry]) -> None:
+    """Exit before anything is pushed when submitting would duplicate PRs."""
+    duplicates = find_duplicate_prs(st)
+    if not duplicates:
+        return
+    lines = []
+    for e, pr in duplicates:
+        lines.append(f"    {e.commit.commit_id()[:8]} {e.commit.title()}")
+        lines.append(
+            f"      is #{pr['number']}: stack-info: PR: {pr['url']}, branch: {pr['headRefName']}"
+        )
+    error(ERROR_DUPLICATE_PRS.format(duplicates="\n".join(lines)))
+    sys.exit(1)
+
+
 def create_pr(e: StackEntry, *, is_draft: bool, reviewer: str = "") -> None:
     # Don't do anything if the PR already exists
     if e.has_pr():
@@ -1123,6 +1180,7 @@ def command_submit(
     reviewer: str,
     keep_body: bool,
     draft_bitmask: list[bool] | None = None,
+    allow_duplicates: bool = False,
 ) -> None:
     """Entry point for 'submit' command.
 
@@ -1133,6 +1191,8 @@ def command_submit(
         keep_body: Boolean flag indicating if the body of the PRs should be kept.
         draft_bitmask: List of boolean values indicating if each PR should be created as
             a draft.
+        allow_duplicates: Create PRs for commits without stack-info even when an
+            open PR of the user has the same title.
     """
     log(h("SUBMIT"), level=1)
 
@@ -1164,6 +1224,9 @@ def command_submit(
     if (draft_bitmask is not None) and (len(draft_bitmask) != len(st)):
         log(h("Draft bitmask passed to 'submit' doesn't match number of PRs!"))
         return
+
+    if not allow_duplicates:
+        check_no_duplicate_prs(st)
 
     # Create local branches and initialize base and head fields in the stack
     # elements
@@ -1829,6 +1892,13 @@ def create_argparser(
         help="List of reviewers for the PR",
     )
     parser_submit.add_argument(
+        "--allow-duplicates",
+        action="store_true",
+        help="Create PRs for commits without stack-info even when you already have "
+        "an open PR with the same title (by default submit refuses: the commit "
+        "probably lost its stack-info line in a rewrite)",
+    )
+    parser_submit.add_argument(
         "-s",
         "--stash",
         action="store_true",
@@ -1984,6 +2054,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
                     reviewer=args.reviewer,
                     keep_body=not args.update_body,
                     draft_bitmask=args.draft_bitmask,
+                    allow_duplicates=args.allow_duplicates,
                 )
             # Show the links for easy clicking
             command_view(common_args, short=True)

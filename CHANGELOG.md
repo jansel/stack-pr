@@ -1,5 +1,10 @@
 # Top of tree
 
+* `submit` refuses to open a PR for a commit without `stack-info` when one of
+  your open PRs has the same title: the commit most likely lost its metadata
+  in a history rewrite, and every later submit would open another duplicate.
+  The error prints the `stack-info` line to restore; `--allow-duplicates`
+  overrides the check.
 * Run `git` and `gh` without the Python environment's `LD_LIBRARY_PATH`, so a
   conda or virtualenv library directory cannot break the SSH `ProxyCommand`
   behind `git push`.
