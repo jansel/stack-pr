@@ -146,6 +146,11 @@ Amend or reorder commits locally, then run `stack-pr submit` again. Existing PR
 bodies are preserved; use `stack-pr submit --update-body` when you want to replace
 them with the current commit messages.
 
+Updates preserve existing PR bases and draft status when the stack order is
+unchanged and pushing a base cannot prematurely close its child PR. This keeps
+CI running against the intended bases. New or rearranged stacks retain temporary
+detachment to the target branch to avoid GitHub automatically closing PRs.
+
 To rebase onto the latest target branch:
 
 ```bash

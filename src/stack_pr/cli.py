@@ -957,6 +957,55 @@ def is_draft_pr(e: StackEntry) -> bool:
     return bool(json.loads(out)["isDraft"])
 
 
+def can_preserve_remote_bases(st: list[StackEntry], *, verbose: bool) -> bool:
+    """Keep a submitted stack's bases when neither topology nor closure is at risk.
+
+    Retargeting an unchanged stack to main can temporarily create conflicts.
+    GitHub then suppresses pull_request workflows on the push, and restoring
+    the stacked bases afterwards does not trigger those workflows again.
+    """
+    if not all(e.has_pr() for e in st):
+        return False
+    previous_remote_head = ""
+    for index, e in enumerate(st):
+        data = json.loads(
+            get_command_output(
+                [
+                    "gh",
+                    "pr",
+                    "view",
+                    e.pr,
+                    "--json",
+                    "state,headRefName,headRefOid,baseRefName",
+                ]
+            )
+        )
+        if (
+            data["state"] != "OPEN"
+            or data["headRefName"] != e.head
+            or data["baseRefName"] != e.base
+        ):
+            return False
+        if index:
+            # A patch can move into a lower PR without changing branch names.
+            # Either branch update may be processed first. Detach if an old
+            # head is contained in its new base, or a new head in its old base.
+            # Unknown objects also fall back; only exit 1 proves non-ancestry.
+            for head, base in (
+                (data["headRefOid"], st[index - 1].head),
+                (e.head, previous_remote_head),
+            ):
+                ancestry = run_shell_command(
+                    ["git", "merge-base", "--is-ancestor", head, base],
+                    check=False,
+                    quiet=not verbose,
+                )
+                if ancestry.returncode != 1:
+                    return False
+        previous_remote_head = data["headRefOid"]
+    return True
+
+
 @contextlib.contextmanager
 def temporary_draft_status(st: list[StackEntry], *, verbose: bool) -> Iterator[None]:
     """Restore PRs made draft by this submission, including after an interruption."""
@@ -1251,7 +1300,8 @@ def command_submit(
     )
 
     with temporary_draft_status(st, verbose=args.verbose):
-        reset_remote_base_branches(st, target=args.target, verbose=args.verbose)
+        if not can_preserve_remote_bases(st, verbose=args.verbose):
+            reset_remote_base_branches(st, target=args.target, verbose=args.verbose)
 
         # Push local branches to remote
         push_branches(st, remote=args.remote, verbose=args.verbose)
