@@ -1,5 +1,9 @@
 # Top of tree
 
+* `land` and `land-all` point a PR at the target branch before pushing its
+  rebased head. Pushing first left GitHub reporting merge conflicts whenever
+  the commit edits lines that the commit landed just before it added, which
+  stopped `land-all` although the local rebase had succeeded.
 * `submit` refuses to open a PR for a commit without `stack-info` when one of
   your open PRs has the same title: the commit most likely lost its metadata
   in a history rewrite, and every later submit would open another duplicate.

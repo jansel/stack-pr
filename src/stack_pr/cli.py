@@ -1464,13 +1464,14 @@ def command_land(args: CommonArgs) -> None:
         log(h("Rebasing the rest of the stack"), level=1)
         prs_to_rebase = st[1:]
         print_stack(prs_to_rebase, links=args.hyperlinks, level=1)
-        for e in prs_to_rebase:
-            rebase_pr(e, remote=args.remote, target=args.target, verbose=args.verbose)
         # Change the target of the new bottom-most PR in the stack to 'target'
+        # before pushing its rebased head: see command_land_all.
         run_shell_command(
             ["gh", "pr", "edit", prs_to_rebase[0].pr, "-B", args.target],
             quiet=not args.verbose,
         )
+        for e in prs_to_rebase:
+            rebase_pr(e, remote=args.remote, target=args.target, verbose=args.verbose)
 
     # Delete local and remote stack branches
     run_shell_command(["git", "checkout", current_branch], quiet=not args.verbose)
@@ -1552,14 +1553,19 @@ def command_land_all(args: CommonArgs, *, wait: int, retries: int) -> None:
             + " "
             + e.pprint(links=args.hyperlinks)
         )
-        if i > 0 or len(remaining) < len(st):
-            log(h(f"Rebasing onto {args.remote}/{args.target}"), level=1)
-            rebase_pr(e, remote=args.remote, target=args.target, verbose=args.verbose)
-        # Set the final base before examining CI, rather than changing it at
-        # merge time after checks have passed against a different base.
+        # Set the final base before pushing the rebased head and examining CI:
+        # the push has to come last. A head pushed while the PR still targets
+        # the previous stack branch conflicts with that branch whenever this
+        # commit edits lines the just-landed commit added (the branch holds
+        # that commit, the new head its squash), and GitHub kept reporting
+        # the conflict after the base change (pytorch/helion#4452). A push
+        # makes it recompute mergeability and run checks against the target.
         run_shell_command(
             ["gh", "pr", "edit", e.pr, "-B", args.target], quiet=not args.verbose
         )
+        if i > 0 or len(remaining) < len(st):
+            log(h(f"Rebasing onto {args.remote}/{args.target}"), level=1)
+            rebase_pr(e, remote=args.remote, target=args.target, verbose=args.verbose)
         land_when_ready(
             e.pr,
             args.target,

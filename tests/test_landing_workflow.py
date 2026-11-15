@@ -96,6 +96,105 @@ def test_resume_after_partial_landing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(merges) == 2
 
 
+def record_landing_events(
+    monkeypatch: pytest.MonkeyPatch, stack: list[cli.StackEntry]
+) -> list[tuple[str, str]]:
+    """Mock git and GitHub for a landing command; return the list its base
+    changes, head pushes and merges are appended to, in order."""
+    events: list[tuple[str, str]] = []
+
+    def run(command: list[str], **kwargs: object) -> CompletedProcess[bytes]:
+        if command[:3] == ["gh", "pr", "edit"]:
+            assert command[4:] == ["-B", "main"]
+            events.append(("retarget", command[3]))
+        return CompletedProcess(command, 0)
+
+    def rebase(e: cli.StackEntry, **kwargs: object) -> None:
+        events.append(("push", e.pr))
+
+    monkeypatch.setattr(cli, "get_current_branch_name", lambda: "feature")
+    monkeypatch.setattr(cli, "should_update_local_base", Mock(return_value=False))
+    monkeypatch.setattr(cli, "get_stack", Mock(return_value=stack))
+    monkeypatch.setattr(cli, "verify", lambda st, **kwargs: st)
+    monkeypatch.setattr(cli, "run_shell_command", run)
+    monkeypatch.setattr(cli, "branch_exists", Mock(return_value=False))
+    monkeypatch.setattr(cli, "rebase_pr", rebase)
+    return events
+
+
+LANDING_ARGS = cli.CommonArgs(
+    base="base",
+    head="HEAD",
+    remote="origin",
+    target="main",
+    hyperlinks=False,
+    verbose=False,
+    branch_name_template="stack",
+    show_tips=False,
+    land_disabled=False,
+)
+
+
+def test_land_all_retargets_a_pr_before_pushing_its_rebased_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A head pushed while the PR targets the previous stack branch can leave
+    # GitHub reporting conflicts after the base change: the push comes last.
+    stack = [stack_entry(1), stack_entry(2), stack_entry(3)]
+    events = record_landing_events(monkeypatch, stack)
+    merged: set[str] = set()
+
+    def status(pr: str) -> landing.PullRequestStatus:
+        return landing.PullRequestStatus(
+            state="MERGED" if pr in merged else "OPEN",
+            head="a" * 40,
+            base="main",
+            mergeable="MERGEABLE",
+            merge_state="CLEAN",
+            review="APPROVED",
+            draft=False,
+            auto_merge=False,
+        )
+
+    def merge(e: cli.StackEntry, head: str, *, verbose: bool) -> None:
+        events.append(("merge", e.pr))
+        merged.add(e.pr)
+
+    monkeypatch.setattr(cli, "merge_pr", merge)
+    monkeypatch.setattr(landing, "get_pr_status", status)
+    monkeypatch.setattr(landing, "pending_required_checks", lambda pr: [])
+    cli.command_land_all(LANDING_ARGS, wait=0, retries=0)
+    first, second, third = (e.pr for e in stack)
+    assert events == [
+        ("retarget", first),
+        ("merge", first),
+        ("retarget", second),
+        ("push", second),
+        ("merge", second),
+        ("retarget", third),
+        ("push", third),
+        ("merge", third),
+    ]
+
+
+def test_land_retargets_the_new_bottom_pr_before_pushing_its_rebased_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stack = [stack_entry(1), stack_entry(2), stack_entry(3)]
+    events = record_landing_events(monkeypatch, stack)
+    monkeypatch.setattr(
+        cli, "land_pr", lambda e, **kwargs: events.append(("merge", e.pr))
+    )
+    cli.command_land(LANDING_ARGS)
+    first, second, third = (e.pr for e in stack)
+    assert events == [
+        ("merge", first),
+        ("retarget", second),
+        ("push", second),
+        ("push", third),
+    ]
+
+
 @pytest.mark.parametrize("states", [["OPEN", "MERGED"], ["MERGED", "CLOSED"]])
 def test_resume_rejects_invalid_stack_states(
     states: list[str], monkeypatch: pytest.MonkeyPatch
