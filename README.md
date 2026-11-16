@@ -33,7 +33,8 @@ plus these workflow changes:
   branch-number reuse that could overwrite existing stack branches; proposed
   upstream in [PR #86](https://github.com/modular/stack-pr/pull/86).
 - **Upgrade from GitHub:** `stack-pr upgrade` installs the latest `main` from
-  this fork into the current installation's Python environment.
+  this fork into the current installation's Python environment. Editable
+  installations pull updates into their source checkout instead.
 - **Failure recovery:** submissions restore the exact stash they created and
   restore PRs temporarily made draft, including after errors or Ctrl-C.
 - **Duplicate-PR guard:** `submit` refuses, before pushing anything, to open a PR
@@ -93,11 +94,21 @@ The version comes from the installed package's metadata, independent of the
 repository you run it in. GitHub installations also report the exact source
 commit recorded by pip.
 
-This runs `python -m pip install --upgrade` using the Python interpreter that
-runs `stack-pr`, targeting this fork's `main` branch. It works from any directory,
-requires Git access to the fork, and reports pip's exit status if installation
-fails. It does not need a working checkout or `gh` at runtime if Git credentials
-are already configured.
+For a regular installation, `stack-pr upgrade` runs
+`python -m pip install --upgrade` using the Python interpreter that runs
+`stack-pr`, targeting this fork's `main` branch.
+
+For an editable installation (`pip install -e /path/to/stack-pr`), it pulls
+updates into the source checkout recorded in the installed package metadata.
+It follows that checkout's current branch and configured upstream, allowing
+only a fast-forward update and preserving the editable installation. Local
+commits and uncommitted changes are preserved; if branches have diverged or
+changes would be overwritten, resolve Git's error in the checkout and rerun
+`stack-pr upgrade`. It does not rebase or stash changes automatically.
+
+Both modes work from any directory and report Git's or pip's exit status on
+failure. Git access to the remote is required; `gh` is not needed at runtime
+if Git credentials are already configured.
 
 For local development, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -170,7 +181,7 @@ local branch before resubmitting the remaining stack.
 | `land-all` | Watch required CI and merge the stack; rerun to resume. |
 | `abandon` | Remove stack metadata and delete the associated stack branches. |
 | `config section.key=value` | Write a configuration setting. |
-| `upgrade` | Install the latest version of this fork from GitHub. |
+| `upgrade` | Pull updates into an editable checkout, or install the latest fork from GitHub. |
 | `--version` | Print the installed version and source commit. |
 
 ### Commit ranges and common options

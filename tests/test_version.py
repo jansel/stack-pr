@@ -33,6 +33,60 @@ def test_installed_version(
 def test_version_without_installed_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(version, "distribution", Mock(side_effect=PackageNotFoundError))
     assert "not installed" in version.version_string()
+    assert version.editable_checkout() is None
+
+
+@pytest.mark.parametrize(
+    "direct_url",
+    [
+        None,
+        {"url": "https://github.com/jansel/stack-pr", "vcs_info": {"vcs": "git"}},
+        {"url": "file:///source/stack-pr", "dir_info": {}},
+        {"url": "file:///source/stack-pr", "dir_info": {"editable": False}},
+    ],
+)
+def test_regular_installation_has_no_editable_checkout(
+    direct_url: dict | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = Mock()
+    package.read_text.return_value = json.dumps(direct_url) if direct_url else None
+    monkeypatch.setattr(version, "distribution", Mock(return_value=package))
+    assert version.editable_checkout() is None
+
+
+@pytest.mark.parametrize("authority", ["", "localhost"])
+def test_editable_checkout_decodes_file_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authority: str
+) -> None:
+    checkout = tmp_path / "editable checkout #1%20"
+    url = checkout.as_uri().replace("file://", f"file://{authority}", 1)
+    package = Mock()
+    package.read_text.return_value = json.dumps(
+        {"url": url, "dir_info": {"editable": True}}
+    )
+    monkeypatch.setattr(version, "distribution", Mock(return_value=package))
+    assert version.editable_checkout() == checkout
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "https://github.com/jansel/stack-pr",
+        "file:relative/path",
+        "file://other-host/source/stack-pr",
+    ],
+)
+def test_invalid_editable_checkout_is_not_a_regular_installation(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = Mock()
+    package.read_text.return_value = json.dumps(
+        {"url": url, "dir_info": {"editable": True}}
+    )
+    monkeypatch.setattr(version, "distribution", Mock(return_value=package))
+    with pytest.raises(ValueError, match="local directory"):
+        version.editable_checkout()
 
 
 def test_version_ignores_repository_and_config(

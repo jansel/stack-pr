@@ -82,7 +82,7 @@ from stack_pr.shell_commands import (
     get_command_output,
     run_shell_command,
 )
-from stack_pr.version import version_string
+from stack_pr.version import editable_checkout, version_string
 
 logger = getLogger(__name__)
 
@@ -1805,14 +1805,41 @@ def command_config(config_file: str | Path, setting: str) -> None:
 # UPGRADE
 # ===----------------------------------------------------------------------=== #
 def command_upgrade() -> None:
-    """Upgrade this installation from the fork's main branch."""
-    print(f"Upgrading stack-pr from {FORK_INSTALL_URL}", flush=True)
-    result = run_shell_command(
-        [sys.executable, "-m", "pip", "install", "--upgrade", FORK_INSTALL_URL],
-        quiet=False,
-        check=False,
-    )
+    """Pull an editable checkout, or upgrade a regular installation using pip."""
+    try:
+        checkout = editable_checkout()
+    except ValueError as exc:
+        error(str(exc))
+        sys.exit(1)
+
+    if checkout is not None:
+        print(f"Updating editable stack-pr checkout at {checkout}", flush=True)
+        command = [
+            "git",
+            "-C",
+            str(checkout),
+            "pull",
+            "--ff-only",
+            "--no-rebase",
+            "--no-autostash",
+        ]
+    else:
+        print(f"Upgrading stack-pr from {FORK_INSTALL_URL}", flush=True)
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            FORK_INSTALL_URL,
+        ]
+    result = run_shell_command(command, quiet=False, check=False)
     if result.returncode:
+        if checkout is not None:
+            error(
+                f"Could not update editable checkout at {checkout}. "
+                "Resolve the Git error there and rerun stack-pr upgrade."
+            )
         sys.exit(result.returncode)
     print("stack-pr is up to date.")
 
@@ -1968,8 +1995,12 @@ def create_argparser(
 
     subparsers.add_parser(
         "upgrade",
-        help="Upgrade stack-pr from github.com/jansel/stack-pr (main)",
-        description="Install the latest fork using pip in this Python environment.",
+        help="Upgrade stack-pr or pull its editable checkout",
+        description=(
+            "Pull an editable checkout's tracked branch with a fast-forward-only "
+            "update, or install the latest fork from github.com/jansel/stack-pr "
+            "(main) using pip in this Python environment."
+        ),
     )
 
     return parser
